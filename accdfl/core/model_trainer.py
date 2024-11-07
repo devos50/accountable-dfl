@@ -1,6 +1,6 @@
+import copy
 import logging
 import os
-import time
 from asyncio import sleep, CancelledError, get_event_loop
 from typing import Optional
 
@@ -82,6 +82,7 @@ class ModelTrainer:
 
         samples_trained_on = 0
         model = model.to(device)
+        global_weights = copy.deepcopy(model)
         for local_step in range(local_steps):
             if not self.settings.bypass_training:
                 train_set = self.dataset.get_trainset(batch_size=self.settings.learning.batch_size, shuffle=True)
@@ -111,6 +112,14 @@ class ModelTrainer:
                     lossf = CrossEntropyLoss()
 
                 loss = lossf(output, target)
+
+                # FedProx
+                mu = 0.05
+                proximal_term = 0.0
+                for param, global_param in zip(model.parameters(), global_weights.parameters()):
+                    proximal_term += torch.norm(param - global_param) ** 2
+                loss += (mu / 2) * proximal_term
+
                 self.logger.debug('d-sgd.next node backward propagation (step %d/%d)', local_step, local_steps)
                 loss.backward()
                 optimizer.optimizer.step()
