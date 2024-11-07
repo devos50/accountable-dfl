@@ -134,8 +134,19 @@ class LearningSimulation(TaskManager):
         with open(os.path.join("data", "fedscale_traces"), "rb") as traces_file:
             data = pickle.load(traces_file)
 
+        # Filter and convert all bandwidth values to bytes/s.
+        data = {
+            key: {
+                **value,
+                "communication": int(value["communication"]) * 1000 // 8  # Convert to bytes/s
+            }
+            for key, value in data.items()
+            if int(value["communication"]) * 1000 // 8 >= self.args.min_bandwidth  # Filter based on minimum bandwidth
+        }
+
         rand = Random(self.args.seed)
         device_ids = rand.sample(list(data.keys()), self.args.peers)
+
         nodes_bws: Dict[bytes, int] = {}
         for ind, node in enumerate(self.nodes):
             node.overlays[0].model_manager.model_trainer.simulated_speed = data[device_ids[ind]]["computation"]
@@ -145,7 +156,7 @@ class LearningSimulation(TaskManager):
                     self.logger.error("Setting BW limit of server node %d to unlimited", ind)
                     bw_limit: int = 1000000000000
                 else:
-                    bw_limit: int = int(data[ind + 1]["communication"]) * 1000 // 8
+                    bw_limit: int = int(data[device_ids[ind]]["communication"])
                 node.overlays[0].bw_scheduler.bw_limit = bw_limit
                 nodes_bws[node.overlays[0].my_peer.public_key.key_to_bin()] = bw_limit
 
