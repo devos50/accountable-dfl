@@ -77,6 +77,7 @@ class DFLSimulation(LearningSimulation):
             inactivity_threshold=1000,
             fixed_aggregator=peer_pk if self.args.fix_aggregator else None,
             aggregation_timeout=self.args.aggregation_timeout,
+            fedprox_mu=self.args.fedprox_mu,
         )
 
         self.session_settings = SessionSettings(

@@ -114,11 +114,11 @@ class ModelTrainer:
                 loss = lossf(output, target)
 
                 # FedProx
-                mu = 0.05
-                proximal_term = 0.0
-                for param, global_param in zip(model.parameters(), global_weights.parameters()):
-                    proximal_term += torch.norm(param - global_param) ** 2
-                loss += (mu / 2) * proximal_term
+                if self.settings.dfl.fedprox_mu > 0:
+                    proximal_term = 0.0
+                    for param, global_param in zip(model.parameters(), global_weights.parameters()):
+                        proximal_term += torch.norm(param - global_param) ** 2
+                    loss += (self.settings.dfl.fedprox_mu / 2) * proximal_term
 
                 self.logger.debug('d-sgd.next node backward propagation (step %d/%d)', local_step, local_steps)
                 loss.backward()
