@@ -145,7 +145,7 @@ class LearningSimulation(TaskManager):
                     self.logger.error("Setting BW limit of server node %d to unlimited", ind)
                     bw_limit: int = 1000000000000
                 else:
-                    bw_limit: int = int(data[ind + 1]["communication"]) * 1024 // 8
+                    bw_limit: int = int(data[ind + 1]["communication"]) * 1000 // 8
                 node.overlays[0].bw_scheduler.bw_limit = bw_limit
                 nodes_bws[node.overlays[0].my_peer.public_key.key_to_bin()] = bw_limit
 
@@ -159,7 +159,7 @@ class LearningSimulation(TaskManager):
             rows = diablo_file.readlines()
             for row in rows:
                 values = list(map(float, row.strip().split(',')))
-                mean_value = np.mean(values) * 1024 * 1024 // 8
+                mean_value = np.mean(values) * 1000 * 1000 // 8
                 bw_means.append(mean_value)
 
         nodes_bws: Dict[bytes, int] = {}
