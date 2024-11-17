@@ -29,6 +29,8 @@ class DFLSimulation(LearningSimulation):
         self.data_dir = os.path.join("data", "n_%d_%s_s%d_a%d_sf%g_lr%g_sd%ddfl" % (
             self.args.peers, self.args.dataset, self.args.sample_size, self.args.num_aggregators,
             self.args.success_fraction, self.args.learning_rate, self.args.seed))
+        
+        self.aggregated_models: List = []
 
     def get_ipv8_builder(self, peer_id: int) -> ConfigBuilder:
         builder = super().get_ipv8_builder(peer_id)
@@ -182,7 +184,32 @@ class DFLSimulation(LearningSimulation):
                 self.logger.info("Activating peer %s in round 1", overlay.peer_manager.get_my_short_id())
                 overlay.received_aggregated_model(overlay.my_peer, 1, overlay.model_manager.model)
 
+    def compute_model_difference_score(self, models):
+        """
+        Computes a difference score for a list of PyTorch models.
+        
+        Args:
+            models (list): A list of PyTorch models to compare.
+        
+        Returns:
+            float: The difference score (0 means models are identical).
+        """
+        if len(models) < 2:
+            raise ValueError("At least two models are required for comparison.")
+        
+        # Initialize a score
+        difference_score = 0.0
+        
+        # Compare the parameters pairwise
+        for i in range(len(models)):
+            for j in range(i + 1, len(models)):
+                for p1, p2 in zip(models[i].parameters(), models[j].parameters()):
+                    difference_score += torch.sum(torch.abs(p1 - p2)).item()
+        
+        return difference_score
+
     async def on_round_complete(self, ind: int, round_nr: int, model):
+        self.aggregated_models.append(model)
         if round_nr not in self.round_completed_counts:
             self.round_completed_counts[round_nr] = 0
         self.round_completed_counts[round_nr] += 1
@@ -227,6 +254,9 @@ class DFLSimulation(LearningSimulation):
             self.latest_accuracy_check_round = round_nr
 
         if self.args.rounds and round_nr >= self.args.rounds:
+            print(self.compute_model_difference_score(self.aggregated_models))
+
+
             self.on_simulation_finished()
             self.loop.stop()
 

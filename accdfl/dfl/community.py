@@ -84,6 +84,7 @@ class DFLCommunity(LearningCommunity):
         self.events: List[Tuple[float, str, int, str]] = []
 
         self.round_info: Dict[int, Round] = {}
+        self.last_round_completed: int = 0
 
         # State
         self.ongoing_training_task_name: Optional[str] = None
@@ -439,47 +440,45 @@ class DFLCommunity(LearningCommunity):
         self.logger.info("Participant %s completed round %d", self.peer_manager.get_my_short_id(), round_nr)
         if self.round_complete_callback:
             ensure_future(self.round_complete_callback(round_nr, aggregated_model))
+        self.last_round_completed = round_nr
         self.round_info.pop(round_nr)
 
     async def do_ring_allreduce(self, round_info: Round) -> int:
-        # TODO we're not checking online/offline status of nodes!
         round_nr: int = round_info.round_nr
-        participants = await self.determine_available_peers_for_sample(round_nr, self.settings.dfl.sample_size)
+        participants: List[bytes] = await self.determine_available_peers_for_sample(round_nr, self.settings.dfl.sample_size)
         participants = sorted(participants)
-        total_participants: int = len(participants)
         my_rank: int = participants.index(self.my_id)
 
-        round_info.reduction_manager = ReductionManager(round, self.model_manager.model, participants, my_rank)
+        round_info.reduction_manager = ReductionManager(round, self.model_manager.model, my_rank, 10)  # TODO hard-coded chunking fraction
         round_info.reduction_manager.prepare()
 
-        # Prepare all futures
-        for step in range(2 * total_participants - 1):
-            round_info.reduction_manager.receive_futures[step] = Future()
+        # Process all the chunks that we already received
+        for chunk_idx, chunk in round_info.out_of_order_chunks:
+            round_info.reduction_manager.process_received_chunk(chunk_idx, chunk)
+        round_info.out_of_order_chunks = []
 
-        for step in range(2 * (total_participants - 1)):
-            round_info.reduction_manager.step = step
+        send_chunks_future = ensure_future(self.send_chunks(participants, round_info))
 
+        await asyncio.sleep(60)
+        round_info.should_stop_sending_chunks = True
+
+        await send_chunks_future
+
+        return my_rank
+
+    async def send_chunks(self, participants: List[bytes], round_info: Round) -> None:
+        while True:
             # Send chunk
-            idx, chunk = round_info.reduction_manager.get_chunk_to_send(step)
-            recipient_peer_pk = participants[(my_rank + 1) % len(participants)]
+            # TODO we should probably start several transfers at the same time to better utilize outgoing bandwidth!
+            idx, chunk = round_info.reduction_manager.get_random_chunk_to_send(self.random)
+            recipient_peer_pk = self.random.choice(participants)
             peer = self.get_peer_by_pk(recipient_peer_pk)
             if not peer:
                 raise RuntimeError("Could not find peer with public key %s", hexlify(recipient_peer_pk).decode())
 
-            ensure_future(self.eva_send_chunk(round_nr, step, idx, chunk, peer))
-
-            if step < total_participants - 1:
-                round_info.reduction_manager.chunks[idx].zero_()
-
-            # Check if we have this chunk
-            if step in round_info.out_of_order_chunks:
-                chunk_idx, rec_chunk = round_info.out_of_order_chunks[step]
-                self.received_model_chunk(round_nr, step, chunk_idx, rec_chunk)
-                round_info.out_of_order_chunks.pop(step)
-
-            await round_info.reduction_manager.receive_futures[step]
-
-        return my_rank
+            await self.eva_send_chunk(round_info.round_nr, idx, chunk, peer)
+            if round_info.should_stop_sending_chunks:
+                break
 
     async def forward_aggregated_model(self, aggregated_model, my_rank: int, next_round: int) -> None:
         # Forward the aggregated model to the next sample
@@ -577,11 +576,11 @@ class DFLCommunity(LearningCommunity):
 
         await asyncio.gather(*futures)
 
-    def eva_send_chunk(self, round: int, step: int, chunk_idx: int, chunk, peer):
+    def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer):
         # TODO we're not sending the population view here!
         start_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
         serialized_chunk = serialize_chunk(chunk)
-        response = {"round": round, "step": step, "idx": chunk_idx, "type": "chunk"}
+        response = {"round": round, "idx": chunk_idx, "type": "chunk"}
         serialized_response = json.dumps(response).encode()
         return self.schedule_eva_send_model(peer, serialized_response, serialized_chunk, start_time)
 
@@ -619,8 +618,11 @@ class DFLCommunity(LearningCommunity):
 
         if json_data["type"] == "chunk":
             self.log_event(json_data["round"], "received_chunk")
+            if self.last_round_completed >= json_data["round"]:
+                return
+
             incoming_chunk = torch.from_numpy(np.frombuffer(result.data, dtype=np.float32).copy())
-            self.received_model_chunk(json_data["round"], json_data["step"], json_data["idx"], incoming_chunk)
+            self.received_model_chunk(json_data["round"], json_data["idx"], incoming_chunk)
             return
 
         serialized_model = result.data[:json_data["model_data_len"]]
@@ -644,27 +646,21 @@ class DFLCommunity(LearningCommunity):
         else:
             raise RuntimeError("Received unknown message type %s" % json_data["type"])
 
-    def received_model_chunk(self, round_nr: int, step: int, chunk_idx: int, chunk) -> None:
+    def received_model_chunk(self, round_nr: int, chunk_idx: int, chunk) -> None:
         if round_nr not in self.round_info:
             # We received a chunk but haven't started this round yet - store it.
             new_round = Round(round_nr)
             self.round_info[round_nr] = new_round
-            new_round.out_of_order_chunks[step] = (chunk_idx, chunk)
+            new_round.out_of_order_chunks.append((chunk_idx, chunk))
         else:
             # Otherwise, process it right away!
             reduction_manager = self.round_info[round_nr].reduction_manager
             if reduction_manager:
                 # We started the reduction process already
-
-                # Are we waiting for this particular chunk? If so, process it right away.
-                if reduction_manager.step == step:
-                    self.round_info[round_nr].reduction_manager.process_received_chunk(step, chunk_idx, chunk)
-                else:
-                    # Otherwise, store it for processing later.
-                    self.round_info[round_nr].out_of_order_chunks[step] = (chunk_idx, chunk)
+                reduction_manager.process_received_chunk(chunk_idx, chunk)
             else:
                 # We didn't start the reduction process yet so just store it
-                self.round_info[round_nr].out_of_order_chunks[step] = (chunk_idx, chunk)
+                self.round_info[round_nr].out_of_order_chunks.append((chunk_idx, chunk))
 
     def has_enough_trained_models(self, agg_round: int) -> bool:
         return len(self.aggregations[agg_round].incoming_trained_models) >= \
