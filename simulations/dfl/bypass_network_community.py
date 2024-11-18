@@ -20,9 +20,9 @@ class DFLBypassNetworkCommunity(DFLCommunity):
         self.bw_scheduler: BWScheduler = BWScheduler(self.my_peer.public_key.key_to_bin(),
                                                      self.peer_manager.get_my_short_id())
         
-    async def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer):
+    async def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer, in_sample: bool = True):
         binary_data = serialize_chunk(chunk)
-        response = {"round": round, "idx": chunk_idx, "type": "chunk"}        
+        response = {"round": round, "idx": chunk_idx, "type": "chunk", "in_sample": in_sample}
         return await self.eva_send_data(binary_data, response, peer)
 
     async def eva_send_model(self, round, model, type, population_view, peer):

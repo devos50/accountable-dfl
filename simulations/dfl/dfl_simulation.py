@@ -11,6 +11,7 @@ from accdfl.core import NodeMembershipChange
 from accdfl.core.session_settings import DFLSettings, LearningSettings, SessionSettings
 from accdfl.core.peer_manager import PeerManager
 
+from accdfl.dfl.round import Round
 from ipv8.configuration import ConfigBuilder
 
 from simulations.learning_simulation import LearningSimulation
@@ -182,7 +183,10 @@ class DFLSimulation(LearningSimulation):
             overlay = node.overlays[0]
             if overlay.my_id in peers_r1:
                 self.logger.info("Activating peer %s in round 1", overlay.peer_manager.get_my_short_id())
-                overlay.received_aggregated_model(overlay.my_peer, 1, overlay.model_manager.model)
+                new_round = Round(1)
+                new_round.model = overlay.model_manager.model
+                overlay.round_info[1] = new_round
+                overlay.train_in_round(new_round)
 
     def compute_model_difference_score(self, models):
         """

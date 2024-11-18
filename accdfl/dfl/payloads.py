@@ -23,6 +23,5 @@ class PongPayload:
 
 
 @dataclass(msg_id=13)
-class AggAckPayload:
+class TrainDonePayload:
     round: int
-    success: bool

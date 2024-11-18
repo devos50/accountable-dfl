@@ -1,24 +1,23 @@
 import copy
-from asyncio import Future
 from random import Random
-from typing import Dict, List, Optional
+from typing import List
 
 import torch
 
 
-class ReductionManager:
+class ChunkManager:
 
-    def __init__(self, round: int, model, my_rank: int, num_chunks: int):
+    def __init__(self, round: int, model, num_chunks: int):
         self.round: int = round
         self.model = model
-        self.my_rank: int = my_rank
         self.num_chunks: int = num_chunks
         self.chunks: List = [None] * num_chunks
+        self.chunks_received_from_previous_sample: int = 0
         self.step: int = 0
 
     def prepare(self):
         # Chunk
-        flat_params = ReductionManager.get_flat_params(self.model)
+        flat_params = ChunkManager.get_flat_params(self.model)
         total_elements = flat_params.numel()
         chunk_size = total_elements // self.num_chunks
         self.chunks = [flat_params[i * chunk_size: (i + 1) * chunk_size] for i in range(self.num_chunks)]
@@ -47,6 +46,10 @@ class ReductionManager:
     def process_received_chunk(self, chunk_idx: int, chunk):
         self.chunks[chunk_idx].add_(chunk)
         self.chunks[chunk_idx].div_(2)
+
+    def process_received_chunk_from_previous_sample(self, chunk_idx: int, chunk):
+        self.chunks[chunk_idx] = chunk  # TODO doesn't work if we will receive multiple chunks
+        self.chunks_received_from_previous_sample += 1
 
     @staticmethod
     def get_flat_params(model):
