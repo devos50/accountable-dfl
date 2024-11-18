@@ -430,7 +430,8 @@ class DFLCommunity(LearningCommunity):
         self.round_info.pop(round_nr)
 
     async def gossip_chunks(self, round_info: Round, participants: List[bytes]) -> None:
-        round_info.chunk_manager_in_sample = ChunkManager(round, self.model_manager.model, 10)  # TODO hard-coded chunking fraction
+        self.logger.info("Participant %s starts gossiping chunks in round %d", self.peer_manager.get_my_short_id(), round_info.round_nr)
+        round_info.chunk_manager_in_sample = ChunkManager(round, self.model_manager.model, self.settings.dfl.chunks_in_sample)
         round_info.chunk_manager_in_sample.prepare()
 
         # Process all the chunks that we already received
@@ -440,7 +441,7 @@ class DFLCommunity(LearningCommunity):
 
         send_chunks_future = ensure_future(self.send_chunks(participants, round_info))
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(self.settings.dfl.gossip_interval)
         round_info.chunk_gossip_done = True
 
         await send_chunks_future
@@ -595,7 +596,6 @@ class DFLCommunity(LearningCommunity):
             raise RuntimeError("Received unknown message type %s" % json_data["type"])
 
     def received_model_chunk(self, round_nr: int, chunk_idx: int, chunk, in_sample: bool) -> None:
-        # TODO logic
         if round_nr not in self.round_info:
             # We received a chunk but haven't started this round yet - store it.
             new_round = Round(round_nr)

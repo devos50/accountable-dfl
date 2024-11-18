@@ -33,6 +33,8 @@ class DFLSettings:
     inactivity_threshold: int = 50
     fixed_aggregator: Optional[bytes] = None
     aggregation_timeout: float = 300
+    chunks_in_sample: int = 10
+    gossip_interval: float = 60
 
 
 @dataclass

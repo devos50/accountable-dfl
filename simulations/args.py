@@ -58,5 +58,7 @@ def get_args(dataset: str, default_lr: float, default_momentum: float = 0):
     parser.add_argument('--activity-log-interval', type=int, default=None)
     parser.add_argument('--flush-statistics-interval', type=int, default=600)
     parser.add_argument('--write-view-histories', action=argparse.BooleanOptionalAction)
+    parser.add_argument('--chunks-in-sample', type=int, default=10)
+    parser.add_argument('--gossip-interval', type=float, default=60)
 
     return parser.parse_args()

@@ -30,8 +30,6 @@ class DFLSimulation(LearningSimulation):
         self.data_dir = os.path.join("data", "n_%d_%s_s%d_a%d_sf%g_lr%g_sd%ddfl" % (
             self.args.peers, self.args.dataset, self.args.sample_size, self.args.num_aggregators,
             self.args.success_fraction, self.args.learning_rate, self.args.seed))
-        
-        self.aggregated_models: List = []
 
     def get_ipv8_builder(self, peer_id: int) -> ConfigBuilder:
         builder = super().get_ipv8_builder(peer_id)
@@ -80,6 +78,8 @@ class DFLSimulation(LearningSimulation):
             inactivity_threshold=1000,
             fixed_aggregator=peer_pk if self.args.fix_aggregator else None,
             aggregation_timeout=self.args.aggregation_timeout,
+            chunks_in_sample=self.args.chunks_in_sample,
+            gossip_interval=self.args.gossip_interval
         )
 
         self.session_settings = SessionSettings(
@@ -188,38 +188,31 @@ class DFLSimulation(LearningSimulation):
                 overlay.round_info[1] = new_round
                 overlay.train_in_round(new_round)
 
-    def compute_model_difference_score(self, models):
-        """
-        Computes a difference score for a list of PyTorch models.
-        
-        Args:
-            models (list): A list of PyTorch models to compare.
-        
-        Returns:
-            float: The difference score (0 means models are identical).
-        """
-        if len(models) < 2:
-            raise ValueError("At least two models are required for comparison.")
-        
-        # Initialize a score
-        difference_score = 0.0
-        
-        # Compare the parameters pairwise
-        for i in range(len(models)):
-            for j in range(i + 1, len(models)):
-                for p1, p2 in zip(models[i].parameters(), models[j].parameters()):
-                    difference_score += torch.sum(torch.abs(p1 - p2)).item()
-        
-        return difference_score
-
     async def on_round_complete(self, ind: int, round_nr: int, model):
-        self.aggregated_models.append(model)
         if round_nr not in self.round_completed_counts:
             self.round_completed_counts[round_nr] = 0
         self.round_completed_counts[round_nr] += 1
+
+        if self.args.accuracy_logging_interval > 0 and round_nr % self.args.accuracy_logging_interval == 0:
+
+            print("Node %d compute accuracy for round %d!" % (ind, round_nr))
+            if not self.args.bypass_training:
+                accuracy, loss = self.evaluator.evaluate_accuracy(model, device_name=self.args.accuracy_device_name)
+            else:
+                accuracy, loss = 0, 0
+
+            with open(os.path.join(self.data_dir, "accuracies.csv"), "a") as out_file:
+                group = "\"s=%d, a=%d\"" % (self.args.sample_size, self.args.num_aggregators)
+                out_file.write("%s,%d,%g,%s,%f,%d,%d,%f,%f\n" % (self.args.dataset, self.args.seed, self.args.learning_rate, group, get_event_loop().time(),
+                                                                 ind, round_nr, accuracy, loss))
+
+                if not self.args.bypass_training and self.args.store_best_models and accuracy > self.best_accuracy:
+                    self.best_accuracy = accuracy
+                    torch.save(model.state_dict(), os.path.join(self.data_dir, "best.model"))
+
         if self.round_completed_counts[round_nr] < self.session_settings.dfl.sample_size:
             return
-        
+
         self.round_completed_counts.pop(round_nr)
 
         tot_up, tot_down = 0, 0
@@ -237,30 +230,7 @@ class DFLSimulation(LearningSimulation):
                 self.round_durations.append(cur_time - self.last_round_complete_time)
             self.last_round_complete_time = cur_time
 
-        if self.args.accuracy_logging_interval > 0 and round_nr % self.args.accuracy_logging_interval == 0 and \
-                round_nr > self.latest_accuracy_check_round:
-
-            print("Will compute accuracy for round %d!" % round_nr)
-            if not self.args.bypass_training:
-                accuracy, loss = self.evaluator.evaluate_accuracy(model, device_name=self.args.accuracy_device_name)
-            else:
-                accuracy, loss = 0, 0
-
-            with open(os.path.join(self.data_dir, "accuracies.csv"), "a") as out_file:
-                group = "\"s=%d, a=%d\"" % (self.args.sample_size, self.args.num_aggregators)
-                out_file.write("%s,%d,%g,%s,%f,%d,%d,%f,%f\n" % (self.args.dataset, self.args.seed, self.args.learning_rate, group, get_event_loop().time(),
-                                                                 ind, round_nr, accuracy, loss))
-
-                if not self.args.bypass_training and self.args.store_best_models and accuracy > self.best_accuracy:
-                    self.best_accuracy = accuracy
-                    torch.save(model.state_dict(), os.path.join(self.data_dir, "best.model"))
-
-            self.latest_accuracy_check_round = round_nr
-
         if self.args.rounds and round_nr >= self.args.rounds:
-            print(self.compute_model_difference_score(self.aggregated_models))
-
-
             self.on_simulation_finished()
             self.loop.stop()
 
