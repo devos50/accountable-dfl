@@ -447,6 +447,7 @@ class DFLCommunity(LearningCommunity):
 
         await asyncio.sleep(self.settings.dfl.gossip_interval)
         round_info.chunk_gossip_done = True
+        round_info.chunk_manager_in_sample.aggregate_received_chunks()
 
         await send_chunks_future
 

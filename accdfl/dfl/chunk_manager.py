@@ -1,6 +1,6 @@
 import copy
 from random import Random
-from typing import List
+from typing import Dict, List
 
 import torch
 
@@ -12,6 +12,7 @@ class ChunkManager:
         self.model = model
         self.num_chunks: int = num_chunks
         self.chunks: List = [None] * num_chunks
+        self.received_chunks: Dict = {}
         self.chunks_received_from_previous_sample: int = 0
         self.step: int = 0
 
@@ -43,8 +44,14 @@ class ChunkManager:
         return model_cpy
 
     def process_received_chunk(self, chunk_idx: int, chunk):
-        self.chunks[chunk_idx].add_(chunk)
-        self.chunks[chunk_idx].div_(2)
+        if chunk_idx not in self.received_chunks:
+            self.received_chunks[chunk_idx] = []
+        self.received_chunks[chunk_idx].append(chunk)
+
+    def aggregate_received_chunks(self):
+        for chunk_idx, chunks in self.received_chunks.items():
+            self.chunks[chunk_idx] = torch.mean(torch.stack(chunks), dim=0)
+        self.received_chunks = {}
 
     def process_received_chunk_from_previous_sample(self, chunk_idx: int, chunk):
         self.chunks[chunk_idx] = chunk  # TODO doesn't work if we will receive multiple chunks
