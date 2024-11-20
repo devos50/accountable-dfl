@@ -369,6 +369,9 @@ class DFLCommunity(LearningCommunity):
 
     @lazy_wrapper_wd(TrainDonePayload)
     def on_train_done_payload(self, peer: Peer, payload: PongPayload, raw_data: bytes) -> None:
+        if payload.round not in self.round_info:
+            self.round_info[payload.round] = Round(payload.round)
+
         round_info = self.round_info[payload.round]
         round_info.compute_done_acks_received += 1
         if round_info.compute_done_acks_received == self.settings.dfl.sample_size:
