@@ -397,6 +397,7 @@ class DFLCommunity(LearningCommunity):
         round_info.is_training = True
         self.model_manager.model = round_info.model
         await self.model_manager.train()
+        round_info.model = self.model_manager.model
         round_info.is_training = False
         round_info.train_done = True
 
@@ -476,57 +477,6 @@ class DFLCommunity(LearningCommunity):
                 continue
 
             await self.eva_send_chunk(round_info.round_nr + 1, my_rank, chunk, peer, in_sample=False)
-
-    async def forward_aggregated_model(self, aggregated_model, my_rank: int, next_round: int) -> None:
-        # Forward the aggregated model to the next sample
-        participants = await self.determine_available_peers_for_sample(next_round, self.settings.dfl.sample_size)
-        participants = sorted(participants)
-        peer_pk: bytes = participants[my_rank]
-        
-        if peer_pk == self.my_id:
-            model_cpy = copy.deepcopy(aggregated_model)
-            asyncio.get_event_loop().call_soon(self.received_aggregated_model, self.my_peer, next_round, model_cpy)
-            return
-
-        peer = self.get_peer_by_pk(peer_pk)
-        if not peer:
-            raise RuntimeError("Could not find peer with public key %s", hexlify(peer_pk).decode())
-
-        population_view = copy.deepcopy(self.peer_manager.last_active)
-        ensure_future(self.eva_send_model(next_round, aggregated_model, "aggregated_model", population_view, peer))
-
-    async def send_aggregated_model_to_participants(self, participants: List[bytes], model: nn.Module, sample_index: int) -> List[bool]:
-        if not self.is_active:
-            self.logger.warning("Participant %s not sending aggregated model due to offline status",
-                                self.peer_manager.get_my_short_id())
-            return []
-
-        self.logger.info("Participant %s sending aggregated model of round %d to participants",
-                         self.peer_manager.get_my_short_id(), sample_index - 1)
-
-        # For load balancing purposes, shuffle this list
-        self.random.shuffle(participants)
-
-        futures: List[Future] = []
-        population_view = copy.deepcopy(self.peer_manager.last_active)
-        for peer_pk in participants:
-            if peer_pk == self.my_id:
-                model_cpy = copy.deepcopy(model)
-                asyncio.get_event_loop().call_soon(self.received_aggregated_model, self.my_peer, sample_index, model_cpy)
-                continue
-
-            peer = self.get_peer_by_pk(peer_pk)
-            if not peer:
-                self.logger.warning("Could not find peer with public key %s", hexlify(peer_pk).decode())
-                continue
-
-            futures.append(self.eva_send_model(sample_index, model, "aggregated_model", population_view, peer))
-
-        # Flush pending changes to the local view
-        self.peer_manager.flush_last_active_pending()
-
-        res = await asyncio.gather(*futures)
-        return res
 
     def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer, in_sample: bool = True):
         # TODO we're not sending the population view here!
