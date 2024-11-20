@@ -30,7 +30,6 @@ class ChunkManager:
     def get_aggregated_model(self):
         # Reconstruct the flat tensor
         flat_params = torch.cat(self.chunks)
-        flat_params.div_(len(self.chunks))
 
         # Copy the flat tensor into the model
         pointer = 0
