@@ -8,7 +8,7 @@ def get_args(dataset: str, default_lr: float, default_momentum: float = 0):
     parser.add_argument('--learning-rate', type=float, default=default_lr)
     parser.add_argument('--momentum', type=float, default=default_momentum)
     parser.add_argument('--weight-decay', type=float, default=0)
-    parser.add_argument('--batch-size', type=int, default=20)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--local-steps', type=int, default=5)
 
     # Accuracy testing
