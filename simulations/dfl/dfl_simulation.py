@@ -27,9 +27,9 @@ class DFLSimulation(LearningSimulation):
         self.round_durations: List[float] = []
         self.round_completed_counts: Dict[int, int] = {}
         self.best_accuracy: float = 0.0
-        self.data_dir = os.path.join("data", "n_%d_%s_s%d_a%d_sf%g_lr%g_sd%ddfl" % (
+        self.data_dir = os.path.join("data", "n_%d_%s_s%d_a%d_g%g_lr%g_sd%ddfl" % (
             self.args.peers, self.args.dataset, self.args.sample_size, self.args.num_aggregators,
-            self.args.success_fraction, self.args.learning_rate, self.args.seed))
+            self.args.gossip_interval, self.args.learning_rate, self.args.seed))
 
     def get_ipv8_builder(self, peer_id: int) -> ConfigBuilder:
         builder = super().get_ipv8_builder(peer_id)
@@ -72,8 +72,6 @@ class DFLSimulation(LearningSimulation):
         dfl_settings = DFLSettings(
             sample_size=self.args.sample_size,
             num_aggregators=self.args.num_aggregators,
-            success_fraction=self.args.success_fraction,
-            liveness_success_fraction=self.args.liveness_success_fraction,
             ping_timeout=5,
             inactivity_threshold=1000,
             fixed_aggregator=peer_pk if self.args.fix_aggregator else None,

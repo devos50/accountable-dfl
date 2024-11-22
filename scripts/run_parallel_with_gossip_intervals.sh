@@ -6,8 +6,8 @@
 set -e
 
 if [ "$#" -lt 2 ]; then
-  echo "Error: Please provide the command to run with a success_fraction placeholder ({}) and a list of sample sizes."
-  echo "Usage: $0 <command_to_run_with_success_fraction_placeholder> <sf1> <sf2> ..."
+  echo "Error: Please provide the command to run with a gossip_interval placeholder ({}) and a list of sample sizes."
+  echo "Usage: $0 <command_to_run_with_gossip_interval_placeholder> <sf1> <sf2> ..."
   exit 1
 fi
 
