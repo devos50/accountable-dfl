@@ -91,7 +91,6 @@ class DFLCommunity(LearningCommunity):
         self.train_sample_estimate: int = 0
         self.advertise_index: int = 1
         self.aggregations: Dict = {}
-        self.aggregation_timeouts = set()
         self.aggregations_completed = set()
 
         # Components
@@ -122,7 +121,7 @@ class DFLCommunity(LearningCommunity):
                          (len(settings.participants), settings.dfl.sample_size, self.peer_manager.get_my_short_id()))
         super().setup(settings)
         self.peer_manager.inactivity_threshold = settings.dfl.inactivity_threshold
-        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size, settings.dfl.num_aggregators)
+        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size)
 
     def get_round_estimate(self) -> int:
         """
@@ -236,24 +235,16 @@ class DFLCommunity(LearningCommunity):
             self.peer_manager.last_active[peer_pk] = (
             max(payload.round, latest_round), (payload.index, NodeMembershipChange.LEAVE))
 
-    def determine_available_peers_for_sample(self, sample: int, count: int,
-                                             getting_aggregators: bool = False, pick_active_peers: bool = True) -> Future:
-        if getting_aggregators and self.settings.dfl.fixed_aggregator:
-            candidate_peers = [self.settings.dfl.fixed_aggregator]
+    def determine_available_peers_for_sample(self, sample: int, count: int, pick_active_peers: bool = True) -> Future:
+        if pick_active_peers:
+            raw_peers = self.peer_manager.get_active_peers(sample)
         else:
-            if pick_active_peers:
-                raw_peers = self.peer_manager.get_active_peers(sample)
-            else:
-                raw_peers = self.peer_manager.get_peers()
-            candidate_peers = self.sample_manager.get_ordered_sample_list(sample, raw_peers)
+            raw_peers = self.peer_manager.get_peers()
+        candidate_peers = self.sample_manager.get_ordered_sample_list(sample, raw_peers)
+
         self.logger.info("Participant %s starts to determine %d available peers in sample %d (candidates: %d)",
                          self.peer_manager.get_my_short_id(), count, sample,
                          len(candidate_peers))
-
-        if getting_aggregators and not self.settings.dfl.fixed_aggregator and self.other_nodes_bws:
-            # Filter the candidates in the sample and sort them based on their bandwidth capabilities
-            candidate_peers = sorted(candidate_peers[:self.settings.dfl.sample_size],
-                                     key=lambda pk: self.other_nodes_bws[pk], reverse=True)
 
         cache = PingPeersRequestCache(self, candidate_peers, count, sample)
         self.request_cache.add(cache)

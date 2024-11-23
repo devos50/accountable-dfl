@@ -26,11 +26,8 @@ class DFLSettings:
     Setting related to sample-based decentralized federated learning.
     """
     sample_size: int
-    num_aggregators: int
     ping_timeout: float = 5
     inactivity_threshold: int = 50
-    fixed_aggregator: Optional[bytes] = None
-    aggregation_timeout: float = 300
     chunks_in_sample: int = 10
     gossip_interval: float = 60
 

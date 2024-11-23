@@ -124,10 +124,7 @@ class LearningSimulation(TaskManager):
         rand = Random(self.args.seed)
         device_ids = rand.sample(list(data.keys()), self.args.peers)
         for ind, node in enumerate(self.nodes):
-            if node.overlays[0].my_peer.public_key.key_to_bin() != self.session_settings.dfl.fixed_aggregator:
-                node.overlays[0].set_traces(data[device_ids[ind]])
-            else:
-                self.logger.error("Not applying availability traces to server node %d", ind)
+            node.overlays[0].set_traces(data[device_ids[ind]])
 
     def apply_fedscale_traces(self):
         self.logger.info("Applying capability trace file %s", self.args.availability_traces)
@@ -152,11 +149,7 @@ class LearningSimulation(TaskManager):
             node.overlays[0].model_manager.model_trainer.simulated_speed = data[device_ids[ind]]["computation"]
             if self.args.bypass_model_transfers:
                 # Also apply the network latencies
-                if self.session_settings.dfl is not None and node.overlays[0].my_peer.public_key.key_to_bin() == self.session_settings.dfl.fixed_aggregator:
-                    self.logger.error("Setting BW limit of server node %d to unlimited", ind)
-                    bw_limit: int = 1000000000000
-                else:
-                    bw_limit: int = int(data[device_ids[ind]]["communication"])
+                bw_limit: int = int(data[device_ids[ind]]["communication"])
                 node.overlays[0].bw_scheduler.bw_limit = bw_limit
                 nodes_bws[node.overlays[0].my_peer.public_key.key_to_bin()] = bw_limit
 

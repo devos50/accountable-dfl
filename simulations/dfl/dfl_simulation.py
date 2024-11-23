@@ -27,8 +27,8 @@ class DFLSimulation(LearningSimulation):
         self.round_durations: List[float] = []
         self.round_completed_counts: Dict[int, int] = {}
         self.best_accuracy: float = 0.0
-        self.data_dir = os.path.join("data", "n_%d_%s_s%d_a%d_g%g_lr%g_sd%ddfl" % (
-            self.args.peers, self.args.dataset, self.args.sample_size, self.args.num_aggregators,
+        self.data_dir = os.path.join("data", "n_%d_%s_s%d_g%g_lr%g_sd%ddfl" % (
+            self.args.peers, self.args.dataset, self.args.sample_size,
             self.args.gossip_interval, self.args.learning_rate, self.args.seed))
 
     def get_ipv8_builder(self, peer_id: int) -> ConfigBuilder:
@@ -48,17 +48,8 @@ class DFLSimulation(LearningSimulation):
             start_ind, end_ind = int(start_ind), int(end_ind)
             participants_pks = [hexlify(self.nodes[ind].overlays[0].my_peer.public_key.key_to_bin()).decode()
                             for ind in range(start_ind, end_ind)]
-            participants_ids = list(range(start_ind, end_ind))
         else:
             participants_pks = [hexlify(node.overlays[0].my_peer.public_key.key_to_bin()).decode() for node in self.nodes]
-            participants_ids = list(range(len(self.nodes)))
-
-        # Determine who will be the aggregator
-        peer_pk = None
-        lowest_latency_peer_id = -1
-        if self.args.fix_aggregator:
-            lowest_latency_peer_id = self.determine_peer_with_lowest_median_latency(participants_ids)
-            peer_pk = self.nodes[lowest_latency_peer_id].overlays[0].my_peer.public_key.key_to_bin()
 
         # Setup the training process
         learning_settings = LearningSettings(
@@ -71,11 +62,8 @@ class DFLSimulation(LearningSimulation):
 
         dfl_settings = DFLSettings(
             sample_size=self.args.sample_size,
-            num_aggregators=self.args.num_aggregators,
             ping_timeout=5,
             inactivity_threshold=1000,
-            fixed_aggregator=peer_pk if self.args.fix_aggregator else None,
-            aggregation_timeout=self.args.aggregation_timeout,
             chunks_in_sample=self.args.chunks_in_sample,
             gossip_interval=self.args.gossip_interval
         )
@@ -103,11 +91,6 @@ class DFLSimulation(LearningSimulation):
             node.overlays[0].round_complete_callback = lambda round_nr, model, i=ind: self.on_round_complete(i, round_nr, model)
             node.overlays[0].setup(self.session_settings)
             node.overlays[0].model_manager.model_trainer.logger = SimulationLoggerAdapter(node.overlays[0].model_manager.model_trainer.logger, {})
-
-        # If we fix the aggregator, we assume unlimited upload/download slots
-        if self.args.fix_aggregator:
-            self.logger.info("Overriding max. EVA transfers/bw limits for peer %d", lowest_latency_peer_id)
-            self.nodes[lowest_latency_peer_id].overlays[0].eva.settings.max_simultaneous_transfers = 100000
 
         if self.args.bypass_model_transfers:
             # Inject the nodes in each community
@@ -201,7 +184,7 @@ class DFLSimulation(LearningSimulation):
                 accuracy, loss = 0, 0
 
             with open(os.path.join(self.data_dir, "accuracies.csv"), "a") as out_file:
-                group = "\"s=%d, a=%d\"" % (self.args.sample_size, self.args.num_aggregators)
+                group = "\"s=%d\"" % (self.args.sample_size)
                 out_file.write("%s,%d,%g,%s,%f,%d,%d,%f,%f\n" % (self.args.dataset, self.args.seed, self.args.learning_rate, group, get_event_loop().time(),
                                                                  ind, round_nr, accuracy, loss))
 
