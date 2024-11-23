@@ -24,7 +24,7 @@ from ipv8.util import succeed
 from accdfl.core import NodeMembershipChange
 from accdfl.core.community import LearningCommunity
 from accdfl.core.model_manager import ModelManager
-from accdfl.core.models import serialize_chunk, serialize_model, unserialize_model
+from accdfl.core.models import create_model, serialize_chunk, serialize_model, unserialize_model
 from accdfl.core.session_settings import SessionSettings
 from accdfl.dfl.caches import PingPeersRequestCache, PingRequestCache
 from accdfl.dfl.payloads import AdvertiseMembership, PingPayload, PongPayload, TrainDonePayload
@@ -342,12 +342,12 @@ class DFLCommunity(LearningCommunity):
         cache = self.request_cache.pop("ping-%s" % peer_short_id, payload.identifier)
         cache.on_pong()
 
-    def send_train_done(self, participants: List[bytes], round_info: Round) -> None:
+    def send_train_done(self, participants: List[bytes], round_nr: Round) -> None:
         """
         Send a message to other nodes in the sample that training is done.
         """
         auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin())
-        payload = TrainDonePayload(round_info.round_nr)
+        payload = TrainDonePayload(round_nr)
 
         for peer_pk in participants:
             peer = self.get_peer_by_pk(peer_pk)
@@ -366,7 +366,10 @@ class DFLCommunity(LearningCommunity):
         round_info = self.round_info[payload.round]
         round_info.compute_done_acks_received += 1
         if round_info.compute_done_acks_received == self.settings.dfl.sample_size:
-            round_info.other_peers_ready_for_gossip.set_result(True)
+            # We are now ready to start training in the next round!
+            aggregated_model = round_info.chunk_manager_previous_sample.get_aggregated_model()
+            round_info.model = aggregated_model
+            self.train_in_round(round_info)
 
     def train_in_round(self, round_info: Round):
         self.ongoing_training_task_name = "round_%d" % round_info.round_nr
@@ -384,6 +387,9 @@ class DFLCommunity(LearningCommunity):
         self.logger.info("Participant %s starts training in round %d", self.peer_manager.get_my_short_id(), round_nr)
         self.log_event(round_nr, "start_train")
 
+        if round_nr > 1 and self.round_complete_callback:
+            ensure_future(self.round_complete_callback(round_nr - 1, round_info.model))
+
         # 1. Train the model
         round_info.is_training = True
         self.model_manager.model = round_info.model
@@ -399,46 +405,30 @@ class DFLCommunity(LearningCommunity):
             self.logger.warning("Participant %s went offline during model training in round %d - not proceeding",
                                 self.peer_manager.get_my_short_id(), round_nr)
             return
-        
-        # 2. Let the other nodes know that we're done training and wait for their acks
-        participants: List[bytes] = await self.determine_available_peers_for_sample(round_nr, self.settings.dfl.sample_size)
-        participants = sorted(participants)
-        self.send_train_done(participants, round_info)
-        await round_info.other_peers_ready_for_gossip
 
-        # 3. Share the model chunks in a ring all-reduce fashion
-        await self.gossip_chunks(round_info, participants)
-
-        # 4. Send the accumulated chunks to nodes in the next sample
-        my_rank: int = participants.index(self.my_id)
+        # 3. Start sharing the model chunks in a ring all-reduce fashion
         participants_next_sample = await self.determine_available_peers_for_sample(round_nr + 1, self.settings.dfl.sample_size)
         participants_next_sample = sorted(participants_next_sample)
-        aggregated_model = round_info.chunk_manager_in_sample.get_aggregated_model()
-        round_info.chunk_manager_in_sample = None
-        await self.forward_chunks_to_next_sample(aggregated_model, round_info, participants_next_sample, my_rank)
+        await self.gossip_chunks(round_info, participants_next_sample)
+
+        # 4. Let the nodes in the next sample know that we're done training
+        self.send_train_done(participants_next_sample, round_info.round_nr + 1)
 
         # 5. Round complete!
         self.logger.info("Participant %s completed round %d", self.peer_manager.get_my_short_id(), round_nr)
-        if self.round_complete_callback:
-            ensure_future(self.round_complete_callback(round_nr, aggregated_model))
         self.last_round_completed = round_nr
         self.round_info.pop(round_nr)
 
     async def gossip_chunks(self, round_info: Round, participants: List[bytes]) -> None:
         self.logger.info("Participant %s starts gossiping chunks in round %d", self.peer_manager.get_my_short_id(), round_info.round_nr)
-        round_info.chunk_manager_in_sample = ChunkManager(round, self.model_manager.model, self.settings.dfl.chunks_in_sample)
-        round_info.chunk_manager_in_sample.prepare()
-
-        # Process all the chunks that we already received
-        for chunk_idx, chunk in round_info.out_of_order_in_sample_chunks:
-            round_info.chunk_manager_in_sample.process_received_chunk(chunk_idx, chunk)
-        round_info.out_of_order_in_sample_chunks = []
+        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.dfl.chunks_in_sample)
+        round_info.chunk_manager_next_sample.prepare()
 
         send_chunks_future = ensure_future(self.send_chunks(participants, round_info))
 
         await asyncio.sleep(self.settings.dfl.gossip_interval)
         round_info.chunk_gossip_done = True
-        round_info.chunk_manager_in_sample.aggregate_received_chunks()
+        round_info.chunk_manager_next_sample = None
 
         await send_chunks_future
 
@@ -446,35 +436,21 @@ class DFLCommunity(LearningCommunity):
         while True:
             # Send chunk
             # TODO we should probably start several transfers at the same time to better utilize outgoing bandwidth!
-            idx, chunk = round_info.chunk_manager_in_sample.get_random_chunk_to_send(self.random)
+            idx, chunk = round_info.chunk_manager_next_sample.get_random_chunk_to_send(self.random)
             recipient_peer_pk = self.random.choice(participants)
             peer = self.get_peer_by_pk(recipient_peer_pk)
             if not peer:
                 raise RuntimeError("Could not find peer with public key %s", hexlify(recipient_peer_pk).decode())
 
-            await self.eva_send_chunk(round_info.round_nr, idx, chunk, peer, in_sample=True)
+            await self.eva_send_chunk(round_info.round_nr + 1, idx, chunk, peer)
             if round_info.chunk_gossip_done:
                 break
 
-    async def forward_chunks_to_next_sample(self, aggregated_model, round_info: Round, participants: List[bytes], my_rank: int) -> None:
-        round_info.chunk_manager_next_sample = ChunkManager(round, aggregated_model, self.settings.dfl.sample_size)
-        round_info.chunk_manager_next_sample.prepare()
-
-        # Get the chunk related to my rank and send it to all nodes in the next sample
-        chunk = round_info.chunk_manager_next_sample.chunks[my_rank]
-        for peer_pk in participants:
-            peer = self.get_peer_by_pk(peer_pk)
-            if not peer:
-                self.logger.warning("Could not find peer with public key %s", hexlify(peer_pk).decode())
-                continue
-
-            await self.eva_send_chunk(round_info.round_nr + 1, my_rank, chunk, peer, in_sample=False)
-
-    def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer, in_sample: bool = True):
+    def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer):
         # TODO we're not sending the population view here!
         start_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
         serialized_chunk = serialize_chunk(chunk)
-        response = {"round": round, "idx": chunk_idx, "type": "chunk", "in_sample": in_sample}
+        response = {"round": round, "idx": chunk_idx, "type": "chunk"}
         serialized_response = json.dumps(response).encode()
         return self.schedule_eva_send_model(peer, serialized_response, serialized_chunk, start_time)
 
@@ -516,7 +492,7 @@ class DFLCommunity(LearningCommunity):
                 return
 
             incoming_chunk = torch.from_numpy(np.frombuffer(result.data, dtype=np.float32).copy())
-            self.received_model_chunk(json_data["round"], json_data["idx"], incoming_chunk, json_data["in_sample"])
+            self.received_model_chunk(json_data["round"], json_data["idx"], incoming_chunk)
             return
 
         serialized_model = result.data[:json_data["model_data_len"]]
@@ -540,38 +516,22 @@ class DFLCommunity(LearningCommunity):
         else:
             raise RuntimeError("Received unknown message type %s" % json_data["type"])
 
-    def received_model_chunk(self, round_nr: int, chunk_idx: int, chunk, in_sample: bool) -> None:
+    def received_model_chunk(self, round_nr: int, chunk_idx: int, chunk) -> None:
         if round_nr not in self.round_info:
             # We received a chunk but haven't started this round yet - store it.
             new_round = Round(round_nr)
             self.round_info[round_nr] = new_round
 
-            if in_sample:
-                new_round.out_of_order_in_sample_chunks.append((chunk_idx, chunk))
-            else:
-                new_round.chunk_manager_previous_sample = ChunkManager(round_nr, self.model_manager.model, self.settings.dfl.sample_size)
-                new_round.chunk_manager_previous_sample.process_received_chunk_from_previous_sample(chunk_idx, chunk)
+            model = create_model(self.settings.dataset, architecture=self.settings.model)
+            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.dfl.chunks_in_sample)
+            new_round.chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
         else:
             # Otherwise, process it right away!
-            if in_sample:
-                chunk_manager_in_sample = self.round_info[round_nr].chunk_manager_in_sample
-                if chunk_manager_in_sample:
-                    # We started the reduction process already
-                    chunk_manager_in_sample.process_received_chunk(chunk_idx, chunk)
-                else:
-                    # We didn't start the reduction process yet so just store it
-                    self.round_info[round_nr].out_of_order_in_sample_chunks.append((chunk_idx, chunk))
-            else:
-                chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
-                if not chunk_manager_previous_sample:
-                    self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, self.model_manager.model, self.settings.dfl.sample_size)
-                self.round_info[round_nr].chunk_manager_previous_sample.process_received_chunk_from_previous_sample(chunk_idx, chunk)
-
-        # When we have received sufficient chunks, we can start the training process
-        if not in_sample and self.round_info[round_nr].chunk_manager_previous_sample and self.round_info[round_nr].chunk_manager_previous_sample.chunks_received_from_previous_sample == self.settings.dfl.sample_size:
-            self.round_info[round_nr].model = self.round_info[round_nr].chunk_manager_previous_sample.get_aggregated_model()
-            self.round_info[round_nr].chunk_manager_previous_sample = None
-            self.train_in_round(self.round_info[round_nr])
+            chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
+            if not chunk_manager_previous_sample:
+                model = create_model(self.settings.dataset, architecture=self.settings.model)
+                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.dfl.chunks_in_sample)
+            self.round_info[round_nr].chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
 
     async def on_send_complete(self, result: TransferResult):
         await super().on_send_complete(result)

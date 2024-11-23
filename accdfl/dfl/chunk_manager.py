@@ -12,7 +12,7 @@ class ChunkManager:
         self.model = model
         self.num_chunks: int = num_chunks
         self.chunks: List = [None] * num_chunks
-        self.received_chunks: Dict = {}
+        self.received_chunks: List = [None] * num_chunks
         self.chunks_received_from_previous_sample: int = 0
         self.step: int = 0
 
@@ -29,6 +29,11 @@ class ChunkManager:
             self.chunks[-1] = torch.cat([self.chunks[-1], remaining])
 
     def get_aggregated_model(self):
+        for idx in range(len(self.chunks)):
+            assert self.received_chunks[idx], "No chunks received at index %d!" % idx
+
+        self.aggregate_received_chunks()
+
         # Reconstruct the flat tensor
         flat_params = torch.cat(self.chunks)
 
@@ -44,18 +49,14 @@ class ChunkManager:
         return model_cpy
 
     def process_received_chunk(self, chunk_idx: int, chunk):
-        if chunk_idx not in self.received_chunks:
+        if not self.received_chunks[chunk_idx]:
             self.received_chunks[chunk_idx] = []
         self.received_chunks[chunk_idx].append(chunk)
 
     def aggregate_received_chunks(self):
-        for chunk_idx, chunks in self.received_chunks.items():
+        for chunk_idx, chunks in enumerate(self.received_chunks):
             self.chunks[chunk_idx] = torch.mean(torch.stack(chunks), dim=0)
         self.received_chunks = {}
-
-    def process_received_chunk_from_previous_sample(self, chunk_idx: int, chunk):
-        self.chunks[chunk_idx] = chunk  # TODO doesn't work if we will receive multiple chunks
-        self.chunks_received_from_previous_sample += 1
 
     @staticmethod
     def get_flat_params(model):
