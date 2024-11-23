@@ -30,7 +30,7 @@ def get_args(dataset: str, default_lr: float, default_momentum: float = 0):
     parser.add_argument('--dataset', type=str, default=dataset)
     parser.add_argument('--dataset-base-path', type=str, default=None)
     parser.add_argument('--duration', type=int, default=3600)  # Set to 0 to run forever
-    parser.add_argument('--rounds', type=int, default=None)
+    parser.add_argument('--rounds', type=int, default=0)
     parser.add_argument('--alpha', type=float, default=1)
     parser.add_argument('--model', type=str, default=None)
     parser.add_argument('--partitioner', type=str, default="iid")

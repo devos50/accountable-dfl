@@ -79,6 +79,7 @@ class SessionSettings:
     is_simulation: bool = False
     train_device_name: str = "cpu"
     bypass_training: bool = False  # Whether to bypass model training, can be useful to observe network dynamics
+    rounds: int = 0
 
 
 def dump_settings(settings: SessionSettings):

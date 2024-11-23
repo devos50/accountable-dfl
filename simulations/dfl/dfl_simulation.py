@@ -96,6 +96,7 @@ class DFLSimulation(LearningSimulation):
             is_simulation=True,
             train_device_name=self.args.train_device_name,
             bypass_training=self.args.bypass_training,
+            rounds=self.args.rounds
         )
 
         for ind, node in enumerate(self.nodes):
@@ -228,7 +229,8 @@ class DFLSimulation(LearningSimulation):
                 self.round_durations.append(cur_time - self.last_round_complete_time)
             self.last_round_complete_time = cur_time
 
-        if self.args.rounds and round_nr >= self.args.rounds:
+        if self.session_settings.rounds > 0 and round_nr >= self.session_settings.rounds:
+            self.logger.error("Done %d rounds - finishing" % self.session_settings.rounds)
             self.on_simulation_finished()
             self.loop.stop()
 
