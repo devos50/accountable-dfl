@@ -12,10 +12,9 @@ class PeerManager:
     The PeerManager keeps track of the population of peers that are participating in the training process.
     """
 
-    def __init__(self, my_pk: bytes, inactivity_threshold: int):
+    def __init__(self, my_pk: bytes):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.my_pk: bytes = my_pk
-        self.inactivity_threshold = inactivity_threshold
         self.last_active: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]] = {}
         self.last_active_pending: Dict[bytes, Tuple[int, Tuple[int, NodeMembershipChange]]] = {}  # Pending changes that are not immediately applied.
 
@@ -42,7 +41,7 @@ class PeerManager:
     def get_active_peers(self, round: Optional[int] = None) -> List[bytes]:
         active_peers = [peer_pk for peer_pk, status in self.last_active.items() if (status[1][1] != NodeMembershipChange.LEAVE or peer_pk == self.my_pk)]
         if round:
-            active_peers = [peer_pk for peer_pk in active_peers if (self.last_active[peer_pk][0] >= (round - self.inactivity_threshold) or peer_pk == self.my_pk)]
+            active_peers = [peer_pk for peer_pk in active_peers]
         return active_peers
 
     def get_peers(self) -> List[bytes]:

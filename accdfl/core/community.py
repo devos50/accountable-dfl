@@ -6,13 +6,11 @@ from typing import Optional, Callable, Dict, List
 
 import torch
 
-from accdfl.core import TransmissionMethod
 from accdfl.core.models import create_model
 from accdfl.core.model_manager import ModelManager
 from accdfl.core.peer_manager import PeerManager
 from accdfl.core.session_settings import SessionSettings
-from accdfl.util.eva.protocol import EVAProtocol
-from accdfl.util.eva.result import TransferResult
+from accdfl.util.transfer import TransferResult
 
 from ipv8.community import Community
 from ipv8.requestcache import RequestCache
@@ -27,7 +25,6 @@ class LearningCommunity(Community):
         self.request_cache = RequestCache()
         self.my_id = self.my_peer.public_key.key_to_bin()
         self.round_complete_callback: Optional[Callable] = None
-        self.aggregate_complete_callback: Optional[Callable] = None
 
         self.peers_list: List[Peer] = []
 
@@ -40,11 +37,8 @@ class LearningCommunity(Community):
         self.shutting_down = False
 
         # Components
-        self.peer_manager: PeerManager = PeerManager(self.my_id, 100000)
+        self.peer_manager: PeerManager = PeerManager(self.my_id)
         self.model_manager: Optional[ModelManager] = None    # Initialized when the process is setup
-
-        # Model exchange parameters
-        self.eva = EVAProtocol(self, self.on_receive, self.on_send_complete, self.on_error)
 
         # Availability traces
         self.traces: Optional[Dict] = None
@@ -105,14 +99,6 @@ class LearningCommunity(Community):
         participant_index = settings.all_participants.index(hexlify(self.my_id).decode())
         self.model_manager = ModelManager(model, settings, participant_index)
 
-        # Setup the model transmission
-        if self.settings.transmission_method == TransmissionMethod.EVA:
-            self.logger.info("Setting up EVA protocol")
-            self.eva.settings.block_size = settings.eva_block_size
-            self.eva.settings.max_simultaneous_transfers = settings.eva_max_simultaneous_transfers
-        else:
-            raise RuntimeError("Unsupported transmission method %s", self.settings.transmission_method)
-
         self.did_setup = True
 
     def get_peers(self):
@@ -126,30 +112,6 @@ class LearningCommunity(Community):
             if peer.public_key.key_to_bin() == target_pk:
                 return peer
         return None
-
-    def on_eva_send_done(self, future: Future, peer: Peer, serialized_response: bytes, binary_data: bytes, start_time: float):
-        if future.cancelled():  # Do not reschedule if the future was cancelled
-            return
-
-        if future.exception():
-            peer_id = self.peer_manager.get_short_id(peer.public_key.key_to_bin())
-            self.logger.warning("Transfer to participant %s failed, scheduling it again (Exception: %s)",
-                                peer_id, future.exception())
-            # The transfer failed - try it again after some delay
-            ensure_future(asyncio.sleep(self.settings.model_send_delay)).add_done_callback(
-                lambda _: self.schedule_eva_send_model(peer, serialized_response, binary_data, start_time))
-        else:
-            # The transfer seems to be completed - record the transfer time
-            end_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
-
-    def schedule_eva_send_model(self, peer: Peer, serialized_response: bytes, binary_data: bytes, start_time: float) -> Future:
-        # Schedule the transfer
-        future = ensure_future(self.eva.send_binary(peer, serialized_response, binary_data))
-        future.add_done_callback(lambda f: self.on_eva_send_done(f, peer, serialized_response, binary_data, start_time))
-        return future
-
-    async def on_receive(self, result: TransferResult):
-        raise NotImplementedError()
 
     async def on_send_complete(self, result: TransferResult):
         peer_id = self.peer_manager.get_short_id(result.peer.public_key.key_to_bin())

@@ -1,38 +1,33 @@
 import asyncio
-import copy
 import json
-import pickle
-import time
 from asyncio import Future, ensure_future
 from binascii import unhexlify, hexlify
 from math import floor
 from random import Random
 from typing import Dict, Optional, List, Tuple, Set
 
-from accdfl.dfl.chunk_manager import ChunkManager
-from accdfl.dfl.round import Round
+from accdfl.conflux.chunk_manager import ChunkManager
+from accdfl.conflux.round import Round
 import torch
-from torch import nn
 
 import numpy as np
 
 from ipv8.lazy_community import lazy_wrapper_wd
-from ipv8.messaging.payload_headers import BinMemberAuthenticationPayload, GlobalTimeDistributionPayload
+from ipv8.messaging.payload_headers import BinMemberAuthenticationPayload
 from ipv8.types import Peer
 from ipv8.util import succeed
 
-from accdfl.core import NodeMembershipChange
 from accdfl.core.community import LearningCommunity
-from accdfl.core.model_manager import ModelManager
 from accdfl.core.models import create_model, serialize_chunk, serialize_model, unserialize_model
 from accdfl.core.session_settings import SessionSettings
-from accdfl.dfl.caches import PingPeersRequestCache, PingRequestCache
-from accdfl.dfl.payloads import AdvertiseMembership, PingPayload, PongPayload, TrainDonePayload
-from accdfl.dfl.sample_manager import SampleManager
-from accdfl.util.eva.result import TransferResult
+from accdfl.conflux.caches import PingPeersRequestCache, PingRequestCache
+from accdfl.conflux.payloads import PingPayload, PongPayload, TrainDonePayload
+from accdfl.conflux.sample_manager import SampleManager
+from accdfl.util.transfer import TransferResult
+from simulations.bandwidth_scheduler import BWScheduler
 
 
-class DFLCommunity(LearningCommunity):
+class ConfluxCommunity(LearningCommunity):
     community_id = unhexlify('d5889074c1e4c60423cee6e9307ba0ca5695ead7')
 
     def __init__(self, *args, **kwargs):
@@ -45,42 +40,29 @@ class DFLCommunity(LearningCommunity):
         self.bw_in_stats: Dict[str, Dict[str, int]] = {
             "bytes": {
                 "model": 0,
-                "view": 0,
                 "ping": 0,
                 "pong": 0,
-                "membership": 0,
-                "aggack": 0,
             },
             "num": {
                 "model": 0,
-                "view": 0,
                 "ping": 0,
                 "pong": 0,
-                "membership": 0,
-                "aggack": 0,
             }
         }
 
         self.bw_out_stats: Dict[str, Dict[str, int]] = {
             "bytes": {
                 "model": 0,
-                "view": 0,
                 "ping": 0,
                 "pong": 0,
-                "membership": 0,
-                "aggack": 0,
             },
             "num": {
                 "model": 0,
-                "view": 0,
                 "ping": 0,
                 "pong": 0,
-                "membership": 0,
-                "aggack": 0,
             }
         }
         self.determine_sample_durations = []
-        self.derived_samples: List[Tuple[int, List[str]]] = []
         self.events: List[Tuple[float, str, int, str]] = []
 
         self.round_info: Dict[int, Round] = {}
@@ -88,48 +70,25 @@ class DFLCommunity(LearningCommunity):
 
         # State
         self.ongoing_training_task_name: Optional[str] = None
-        self.train_sample_estimate: int = 0
-        self.advertise_index: int = 1
-        self.aggregations: Dict = {}
-        self.aggregations_completed = set()
 
         # Components
         self.sample_manager: Optional[SampleManager] = None  # Initialized when the process is setup
 
         self.other_nodes_bws: Dict[bytes, int] = {}
 
-        self.add_message_handler(AdvertiseMembership, self.on_membership_advertisement)
+        self.nodes = None
+        self.transfers: List[Tuple[str, str, int, float, float, str, bool]] = []
+        self.bw_scheduler: BWScheduler = BWScheduler(self.my_peer.public_key.key_to_bin(), self.peer_manager.get_my_short_id())
+
         self.add_message_handler(PingPayload, self.on_ping)
         self.add_message_handler(PongPayload, self.on_pong)
         self.add_message_handler(TrainDonePayload, self.on_train_done_payload)
 
-    def log_event(self, round: int, event: str):
-        cur_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
-        self.events.append((cur_time, self.peer_manager.get_my_short_id(), round, event))
-
-    def start(self, advertise_join: bool = False):
-        """
-        Start to participate in the training process.
-        """
-        super().start()
-
-        if advertise_join:
-            self.advertise_membership(NodeMembershipChange.JOIN)
-
     def setup(self, settings: SessionSettings):
         self.logger.info("Setting up experiment with %d initial participants and sample size %d (I am participant %s)" %
-                         (len(settings.participants), settings.dfl.sample_size, self.peer_manager.get_my_short_id()))
+                         (len(settings.participants), settings.conflux_settings.sample_size, self.peer_manager.get_my_short_id()))
         super().setup(settings)
-        self.peer_manager.inactivity_threshold = settings.dfl.inactivity_threshold
-        self.sample_manager = SampleManager(self.peer_manager, settings.dfl.sample_size)
-
-    def get_round_estimate(self) -> int:
-        """
-        Get the highest round estimation, based on our local estimations and the estimations in the population view.
-        """
-        max_round_in_population_view = self.peer_manager.get_highest_round_in_population_view()
-        max_in_aggs = max(list(self.aggregations.keys())) if self.aggregations else 0
-        return max(self.train_sample_estimate, max_in_aggs, max_round_in_population_view)
+        self.sample_manager = SampleManager(self.peer_manager, settings.conflux_settings.sample_size)
 
     def go_online(self):
         if self.is_active:
@@ -137,7 +96,6 @@ class DFLCommunity(LearningCommunity):
             return
 
         super().go_online()
-        self.advertise_membership(NodeMembershipChange.JOIN)
 
     def go_offline(self, graceful: bool = True) -> None:
         if not self.is_active:
@@ -149,91 +107,10 @@ class DFLCommunity(LearningCommunity):
         # Cancel training
         self.cancel_current_training_task()
 
-        if graceful:
-            self.advertise_membership(NodeMembershipChange.LEAVE)
-        else:
+        if not graceful:
             self.cancel_all_pending_tasks()
 
-    def update_population_view_history(self):
-        active_peers = self.peer_manager.get_active_peers()
-        active_peers = [self.peer_manager.get_short_id(peer_pk) for peer_pk in active_peers]
-
-        if not self.active_peers_history or (self.active_peers_history[-1][1] != active_peers):  # It's the first entry or it has changed
-            self.active_peers_history.append((time.time(), active_peers))
-
-    def advertise_membership(self, change: NodeMembershipChange):
-        """
-        Advertise your (new) membership to random (online) peers.
-        """
-        advertise_index: int = self.advertise_index
-        self.advertise_index += 1
-
-        self.logger.info("Participant %s advertising its membership change %s to active participants (idx %d)",
-                         self.peer_manager.get_my_short_id(), change, advertise_index)
-
-        active_peer_pks = self.peer_manager.get_active_peers()
-        if self.my_id in active_peer_pks:
-            active_peer_pks.remove(self.my_id)
-
-        if change == NodeMembershipChange.LEAVE:
-            # When going offline, we can simply query our current view of the network and select the last nodes offline
-            random_peer_pks = self.random.sample(active_peer_pks, min(self.sample_manager.sample_size * 10, len(active_peer_pks)))
-        else:
-            # When coming online we probably don't have a fresh view on the network so we need to determine online nodes
-            peer_pks = self.peer_manager.get_peers()
-            random_peer_pks = self.random.sample(peer_pks, min(self.sample_manager.sample_size * 10, len(peer_pks)))
-
-        if self.advertise_index > (advertise_index + 1):
-            # It's not relevant anymore what we're doing
-            return
-
-        for peer_pk in random_peer_pks:
-            peer = self.get_peer_by_pk(peer_pk)
-            if not peer:
-                self.logger.warning("Cannot find Peer object for participant %s!",
-                                    self.peer_manager.get_short_id(peer_pk))
-            self.logger.debug("Participant %s advertising its membership change to participant %s",
-                              self.peer_manager.get_my_short_id(), self.peer_manager.get_short_id(peer_pk))
-            global_time = self.claim_global_time()
-            auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin())
-            payload = AdvertiseMembership(self.get_round_estimate(), advertise_index, change.value)
-            dist = GlobalTimeDistributionPayload(global_time)
-            packet = self._ez_pack(self._prefix, AdvertiseMembership.msg_id, [auth, dist, payload])
-            self.bw_out_stats["bytes"]["membership"] += len(packet)
-            self.bw_out_stats["num"]["membership"] += 1
-            self.endpoint.send(peer.address, packet)
-
-        # Update your own population view
-        info = self.peer_manager.last_active[self.my_id]
-        self.peer_manager.last_active[self.my_id] = (info[0], (advertise_index, change))
-
-    @lazy_wrapper_wd(GlobalTimeDistributionPayload, AdvertiseMembership)
-    def on_membership_advertisement(self, peer, dist, payload, raw_data: bytes):
-        """
-        We received a membership advertisement from a new peer.
-        """
-        if not self.is_active:
-            return
-
-        self.bw_in_stats["bytes"]["membership"] += len(raw_data)
-        self.bw_in_stats["num"]["membership"] += 1
-
-        peer_pk = peer.public_key.key_to_bin()
-        peer_id = self.peer_manager.get_short_id(peer_pk)
-
-        change: NodeMembershipChange = NodeMembershipChange(payload.change)
-        latest_round = self.get_round_estimate()
-        if change == NodeMembershipChange.JOIN:
-            self.logger.debug("Participant %s updating membership of participant %s to: JOIN (idx %d)",
-                              self.peer_manager.get_my_short_id(), peer_id, payload.index)
-            # Do not apply this immediately since we do not want the newly joined node to be part of the next sample just yet.
-            self.peer_manager.last_active_pending[peer_pk] = (
-            max(payload.round, latest_round), (payload.index, NodeMembershipChange.JOIN))
-        else:
-            self.logger.debug("Participant %s updating membership of participant %s to: LEAVE (idx %d)",
-                              self.peer_manager.get_my_short_id(), peer_id, payload.index)
-            self.peer_manager.last_active[peer_pk] = (
-            max(payload.round, latest_round), (payload.index, NodeMembershipChange.LEAVE))
+        self.bw_scheduler.kill_all_transfers()
 
     def determine_available_peers_for_sample(self, sample: int, count: int, pick_active_peers: bool = True) -> Future:
         if pick_active_peers:
@@ -260,7 +137,7 @@ class DFLCommunity(LearningCommunity):
             self.logger.warning("Wanted to ping participant %s but cannot find Peer object!", peer_short_id)
             return succeed((peer_pk, False))
 
-        cache = PingRequestCache(self, ping_all_id, peer, self.settings.dfl.ping_timeout)
+        cache = PingRequestCache(self, ping_all_id, peer, self.settings.conflux_settings.ping_timeout)
         self.request_cache.add(cache)
         cache.start()
         return cache.future
@@ -270,7 +147,7 @@ class DFLCommunity(LearningCommunity):
         Send a ping message with an identifier to a specific peer.
         """
         auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin())
-        payload = PingPayload(self.get_round_estimate(), self.advertise_index - 1, identifier)
+        payload = PingPayload(identifier)
 
         packet = self._ez_pack(self._prefix, PingPayload.msg_id, [auth, payload])
         self.bw_out_stats["bytes"]["ping"] += len(packet)
@@ -290,12 +167,6 @@ class DFLCommunity(LearningCommunity):
         self.bw_in_stats["bytes"]["ping"] += len(raw_data)
         self.bw_in_stats["num"]["ping"] += 1
 
-        if peer_pk in self.peer_manager.last_active:
-            self.peer_manager.update_peer_activity(peer_pk, max(self.get_round_estimate(), payload.round))
-            if payload.index > self.peer_manager.last_active[peer_pk][1][0]:
-                self.peer_manager.last_active[peer_pk] = (self.peer_manager.last_active[peer_pk][0],
-                                                          (payload.index, NodeMembershipChange.JOIN))
-
         self.send_pong(peer, payload.identifier)
 
     def send_pong(self, peer: Peer, identifier: int) -> None:
@@ -303,7 +174,7 @@ class DFLCommunity(LearningCommunity):
         Send a pong message with an identifier to a specific peer.
         """
         auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin())
-        payload = PongPayload(self.get_round_estimate(), self.advertise_index - 1, identifier)
+        payload = PongPayload(identifier)
 
         packet = self._ez_pack(self._prefix, PongPayload.msg_id, [auth, payload])
         self.bw_out_stats["bytes"]["pong"] += len(packet)
@@ -329,15 +200,6 @@ class DFLCommunity(LearningCommunity):
         if not self.request_cache.has("ping-%s" % peer_short_id, payload.identifier):
             self.logger.warning("ping cache with id %s not found", payload.identifier)
             return
-
-        if peer_pk in self.peer_manager.last_active:
-            self.peer_manager.update_peer_activity(peer_pk, max(self.get_round_estimate(), payload.round))
-            if payload.index > self.peer_manager.last_active[peer_pk][1][0]:
-                self.peer_manager.last_active[peer_pk] = (self.peer_manager.last_active[peer_pk][0],
-                                                          (payload.index, NodeMembershipChange.JOIN))
-
-        self.peer_manager.update_peer_activity(peer.public_key.key_to_bin(),
-                                               max(self.get_round_estimate(), payload.round))
 
         cache = self.request_cache.pop("ping-%s" % peer_short_id, payload.identifier)
         cache.on_pong()
@@ -365,7 +227,7 @@ class DFLCommunity(LearningCommunity):
 
         round_info = self.round_info[payload.round]
         round_info.compute_done_acks_received += 1
-        if round_info.compute_done_acks_received == self.settings.dfl.sample_size:
+        if round_info.compute_done_acks_received == self.settings.conflux_settings.sample_size:
             # We are now ready to start training in the next round!
             aggregated_model = round_info.chunk_manager_previous_sample.get_aggregated_model()
             round_info.model = aggregated_model
@@ -385,7 +247,6 @@ class DFLCommunity(LearningCommunity):
             raise RuntimeError("Round number %d invalid!" % round_nr)
 
         self.logger.info("Participant %s starts training in round %d", self.peer_manager.get_my_short_id(), round_nr)
-        self.log_event(round_nr, "start_train")
 
         if round_nr > 1 and self.round_complete_callback:
             ensure_future(self.round_complete_callback(round_nr - 1, round_info.model))
@@ -398,16 +259,14 @@ class DFLCommunity(LearningCommunity):
         round_info.is_training = False
         round_info.train_done = True
 
-        self.log_event(round_nr, "done_train")
-
         # It might be that we went offline at this point - check for it
         if not self.is_active:
             self.logger.warning("Participant %s went offline during model training in round %d - not proceeding",
                                 self.peer_manager.get_my_short_id(), round_nr)
             return
 
-        # 3. Start sharing the model chunks in a ring all-reduce fashion
-        participants_next_sample = await self.determine_available_peers_for_sample(round_nr + 1, self.settings.dfl.sample_size)
+        # 3. Start sharing the model chunks
+        participants_next_sample = await self.determine_available_peers_for_sample(round_nr + 1, self.settings.conflux_settings.sample_size)
         participants_next_sample = sorted(participants_next_sample)
         await self.gossip_chunks(round_info, participants_next_sample)
 
@@ -421,12 +280,12 @@ class DFLCommunity(LearningCommunity):
 
     async def gossip_chunks(self, round_info: Round, participants: List[bytes]) -> None:
         self.logger.info("Participant %s starts gossiping chunks in round %d", self.peer_manager.get_my_short_id(), round_info.round_nr)
-        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.dfl.chunks_in_sample)
+        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.conflux_settings.chunks_in_sample)
         round_info.chunk_manager_next_sample.prepare()
 
         send_chunks_future = ensure_future(self.send_chunks(participants, round_info))
 
-        await asyncio.sleep(self.settings.dfl.gossip_interval)
+        await asyncio.sleep(self.settings.conflux_settings.gossip_interval)
         round_info.chunk_gossip_done = True
         round_info.chunk_manager_next_sample = None
 
@@ -442,30 +301,14 @@ class DFLCommunity(LearningCommunity):
             if not peer:
                 raise RuntimeError("Could not find peer with public key %s", hexlify(recipient_peer_pk).decode())
 
-            await self.eva_send_chunk(round_info.round_nr + 1, idx, chunk, peer)
+            await self.send_chunk(round_info.round_nr + 1, idx, chunk, peer)
             if round_info.chunk_gossip_done:
                 break
 
-    def eva_send_chunk(self, round: int, chunk_idx: int, chunk, peer):
-        # TODO we're not sending the population view here!
-        start_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
-        serialized_chunk = serialize_chunk(chunk)
-        response = {"round": round, "idx": chunk_idx, "type": "chunk"}
-        serialized_response = json.dumps(response).encode()
-        return self.schedule_eva_send_model(peer, serialized_response, serialized_chunk, start_time)
-
-    def eva_send_model(self, round, model, type, population_view, peer):
-        start_time = asyncio.get_event_loop().time() if self.settings.is_simulation else time.time()
-        serialized_model = serialize_model(model)
-        serialized_population_view = pickle.dumps(population_view)
-        self.bw_out_stats["bytes"]["model"] += len(serialized_model)
-        self.bw_out_stats["bytes"]["view"] += len(serialized_population_view)
-        self.bw_out_stats["num"]["model"] += 1
-        self.bw_out_stats["num"]["view"] += 1
-        binary_data = serialized_model + serialized_population_view
-        response = {"round": round, "type": type, "model_data_len": len(serialized_model)}
-        serialized_response = json.dumps(response).encode()
-        return self.schedule_eva_send_model(peer, serialized_response, binary_data, start_time)
+    async def send_chunk(self, round: int, chunk_idx: int, chunk, peer, in_sample: bool = True):
+        binary_data = serialize_chunk(chunk)
+        response = {"round": round, "idx": chunk_idx, "type": "chunk", "in_sample": in_sample}
+        return await self.send_data(binary_data, response, peer)
 
     def cancel_current_training_task(self):
         if self.ongoing_training_task_name and self.is_pending_task_active(self.ongoing_training_task_name):
@@ -487,7 +330,6 @@ class DFLCommunity(LearningCommunity):
         json_data = json.loads(result.info.decode())
 
         if json_data["type"] == "chunk":
-            self.log_event(json_data["round"], "received_chunk")
             if self.last_round_completed >= json_data["round"]:
                 return
 
@@ -496,22 +338,13 @@ class DFLCommunity(LearningCommunity):
             return
 
         serialized_model = result.data[:json_data["model_data_len"]]
-        serialized_population_view = result.data[json_data["model_data_len"]:]
-        received_population_view = pickle.loads(serialized_population_view)
         self.bw_in_stats["bytes"]["model"] += len(serialized_model)
-        self.bw_in_stats["bytes"]["view"] += len(serialized_population_view)
         self.bw_in_stats["num"]["model"] += 1
-        self.bw_in_stats["num"]["view"] += 1
-        self.peer_manager.merge_population_views(received_population_view)
-        self.peer_manager.update_peer_activity(result.peer.public_key.key_to_bin(),
-                                               max(json_data["round"], self.get_round_estimate()))
         incoming_model = unserialize_model(serialized_model, self.settings.dataset, architecture=self.settings.model)
 
         if json_data["type"] == "trained_model":
-            self.log_event(json_data["round"], "received_trained_model")
             await self.received_trained_model(result.peer, json_data["round"], incoming_model)
         elif json_data["type"] == "aggregated_model":
-            self.log_event(json_data["round"], "received_aggregated_model")
             self.received_aggregated_model(result.peer, json_data["round"], incoming_model)
         else:
             raise RuntimeError("Received unknown message type %s" % json_data["type"])
@@ -523,16 +356,66 @@ class DFLCommunity(LearningCommunity):
             self.round_info[round_nr] = new_round
 
             model = create_model(self.settings.dataset, architecture=self.settings.model)
-            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.dfl.chunks_in_sample)
+            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample)
             new_round.chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
         else:
             # Otherwise, process it right away!
             chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
             if not chunk_manager_previous_sample:
                 model = create_model(self.settings.dataset, architecture=self.settings.model)
-                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.dfl.chunks_in_sample)
+                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample)
             self.round_info[round_nr].chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
 
-    async def on_send_complete(self, result: TransferResult):
-        await super().on_send_complete(result)
-        self.peer_manager.update_peer_activity(result.peer.public_key.key_to_bin(), self.get_round_estimate())
+    async def send_data(self, binary_data: bytes, response: bytes, peer):
+        serialized_response = json.dumps(response).encode()
+        found: bool = False
+        transfer_success: bool = True
+        transfer_time: float = 0
+        for node in self.nodes:
+            if node.overlays[0].my_peer == peer:
+                found = True
+                if not node.overlays[0].is_active:
+                    break
+
+                transfer_start_time = asyncio.get_event_loop().time()
+                if self.bw_scheduler.bw_limit > 0:
+                    transfer_size: int = len(binary_data) + len(serialized_response)
+                    transfer = self.bw_scheduler.add_transfer(node.overlays[0].bw_scheduler, transfer_size)
+                    transfer.metadata = response
+                    self.logger.info("Model transfer %s => %s started at t=%f",
+                                     self.peer_manager.get_my_short_id(),
+                                     node.overlays[0].peer_manager.get_my_short_id(),
+                                     transfer_start_time)
+                    try:
+                        await transfer.complete_future
+                    except RuntimeError:
+                        transfer_success = False
+                    transfer_time = asyncio.get_event_loop().time() - transfer_start_time
+
+                    transferred_bytes: int = transfer.get_transferred_bytes()
+                    self.endpoint.bytes_up += transferred_bytes
+                    node.overlays[0].endpoint.bytes_down += transferred_bytes
+
+                    self.logger.info("Model transfer %s => %s %s at t=%f and took %f s.",
+                                     self.peer_manager.get_my_short_id(),
+                                     node.overlays[0].peer_manager.get_my_short_id(),
+                                     "completed" if transfer_success else "failed",
+                                     transfer_start_time, transfer_time)
+                else:
+                    self.endpoint.bytes_up += len(binary_data) + len(serialized_response)
+                    node.overlays[0].endpoint.bytes_down += len(binary_data) + len(serialized_response)
+
+                json_data = json.loads(serialized_response.decode())
+                self.transfers.append((self.peer_manager.get_my_short_id(),
+                                       node.overlays[0].peer_manager.get_my_short_id(), json_data["round"],
+                                       transfer_start_time, transfer_time, json_data["type"], transfer_success))
+
+                if transfer_success:
+                    res = TransferResult(self.my_peer, serialized_response, binary_data, 0)
+                    ensure_future(node.overlays[0].on_receive(res))
+                break
+
+        if not found:
+            raise RuntimeError("Peer %s not found in node list!" % peer)
+
+        return transfer_success

@@ -70,9 +70,9 @@ class PingPeersRequestCache(RandomNumberCache):
         self.round = round
         self.available_peers = []
         self.next_peer_index = 0
-        self.ping_timeout = self.community.settings.dfl.ping_timeout
+        self.ping_timeout = self.community.settings.conflux_settings.ping_timeout
         self.future = Future()
-        self.start_time = get_event_loop().time() if self.community.settings.is_simulation else time.time()
+        self.start_time = get_event_loop().time()
 
     @property
     def timeout_delay(self) -> float:
@@ -88,7 +88,7 @@ class PingPeersRequestCache(RandomNumberCache):
     def finish(self):
         if self.community.request_cache.has(self.prefix, self._number):
             self.community.request_cache.pop(self.prefix, self._number)
-        sample_duration = get_event_loop().time() if self.community.settings.is_simulation else time.time()
+        sample_duration = get_event_loop().time()
         self.community.determine_sample_durations.append((self.start_time, sample_duration))
         self.future.set_result(self.available_peers)
 

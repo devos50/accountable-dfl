@@ -1,19 +1,13 @@
-import asyncio
 import logging
 import os
-import random
-import sys
-import time
 from typing import Dict, Optional, List
 
 import torch
 import torch.nn as nn
 
-from accdfl.core.gradient_aggregation import GradientAggregationMethod
-from accdfl.core.gradient_aggregation.fedavg import FedAvg
 from accdfl.core.model_trainer import ModelTrainer
 from accdfl.core.models import unserialize_model, serialize_model
-from accdfl.core.session_settings import SessionSettings, dump_settings
+from accdfl.core.session_settings import SessionSettings
 
 
 class ModelManager:
@@ -49,13 +43,25 @@ class ModelManager:
     def reset_incoming_trained_models(self):
         self.incoming_trained_models = {}
 
-    def get_aggregation_method(self):
-        if self.settings.gradient_aggregation == GradientAggregationMethod.FEDAVG:
-            return FedAvg
+    @staticmethod
+    def aggregate(models: List[nn.Module], weights: List[float]):
+        if not weights:
+            weights = [float(1. / len(models)) for _ in range(len(models))]
+        else:
+            assert len(weights) == len(models)
+
+        with torch.no_grad():
+            center_model = copy.deepcopy(models[0])
+            for p in center_model.parameters():
+                p.mul_(0)
+            for m, w in zip(models, weights):
+                for c1, p1 in zip(center_model.parameters(), m.parameters()):
+                    c1.add_(w * p1)
+            return center_model
 
     def aggregate_trained_models(self, weights: List[float] = None) -> Optional[nn.Module]:
         models = [model for model in self.incoming_trained_models.values()]
-        return self.get_aggregation_method().aggregate(models, weights=weights)
+        return ModelManager.aggregate(models, weights=weights)
 
     async def train(self) -> int:
         samples_trained_on = await self.model_trainer.train(self.model, device_name=self.settings.train_device_name)
@@ -66,49 +72,3 @@ class ModelManager:
             torch.cuda.empty_cache()
 
         return samples_trained_on
-
-    async def compute_accuracy(self, model: nn.Module):
-        """
-        Compute the accuracy/loss of the current model.
-        Optionally, one can provide a custom iterator to compute the accuracy on a custom dataset.
-        """
-        self.logger.info("Computing accuracy of model")
-
-        # Dump the model and settings to a file
-        model_id = random.randint(1, 1000000)
-        model_file_name = "%d.model" % model_id
-        model_path = os.path.join(self.settings.work_dir, model_file_name)
-        torch.save(model.state_dict(), model_path)
-        dump_settings(self.settings)
-
-        # Get full path to the script
-        import accdfl.util as autil
-        script_dir = os.path.join(os.path.abspath(os.path.dirname(autil.__file__)), "evaluate_model.py")
-        cmd = "%s %s %s %d %s %d" % (sys.executable, script_dir, self.settings.work_dir, model_id,
-                                     self.data_dir, torch.get_num_threads())
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE)
-
-        stdout, stderr = await proc.communicate()
-        self.logger.info(f'Accuracy evaluator exited with {proc.returncode}]')
-
-        if proc.returncode != 0:
-            if stdout:
-                self.logger.error(f'[stdout]\n{stdout.decode()}')
-            if stderr:
-                self.logger.error(f'[stderr]\n{stderr.decode()}')
-            raise RuntimeError("Accuracy evaluation subprocess exited with non-zero exit code %d: %s" %
-                               (proc.returncode, stderr.decode()))
-
-        os.unlink(model_path)
-
-        # Read the accuracy and the loss from the file
-        results_file = os.path.join(self.settings.work_dir, "%d_results.csv" % model_id)
-        with open(results_file) as in_file:
-            content = in_file.read().strip().split(",")
-
-        os.unlink(results_file)
-
-        return float(content[0]), float(content[1])

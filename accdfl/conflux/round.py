@@ -1,7 +1,7 @@
 from asyncio import Future
 from typing import List, Optional
 
-from accdfl.dfl.chunk_manager import ChunkManager
+from accdfl.conflux.chunk_manager import ChunkManager
 
 from torch import nn
 
