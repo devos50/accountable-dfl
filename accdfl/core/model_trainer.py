@@ -1,14 +1,17 @@
 import logging
-import os
 from asyncio import sleep, CancelledError, get_event_loop
 from typing import Optional
 
 import torch
 from torch.autograd import Variable
 from torch.nn import CrossEntropyLoss, MSELoss, NLLLoss
+from torch.utils.data import DataLoader
 
-from accdfl.core.datasets import create_dataset, Dataset
 from accdfl.core.session_settings import SessionSettings
+
+from flwr_datasets import FederatedDataset
+
+from datasets import Dataset
 
 AUGMENTATION_FACTOR_SIM = 3.0
 
@@ -18,7 +21,7 @@ class ModelTrainer:
     Manager to train a particular model.
     """
 
-    def __init__(self, data_dir, settings: SessionSettings, participant_index: int):
+    def __init__(self, dataset: FederatedDataset, settings: SessionSettings, participant_index: int):
         """
         :param simulated_speed: compute speed of the simulated device, in ms/sample.
         """
@@ -28,26 +31,26 @@ class ModelTrainer:
         self.simulated_speed: Optional[float] = None
         self.total_training_time: float = 0
         self.is_training: bool = False
-
-        if settings.dataset in ["cifar10", "mnist", "movielens", "spambase", "google_speech"]:
-            self.train_dir = data_dir
-        else:
-            self.train_dir = os.path.join(data_dir, "per_user_data", "train")
-        self.dataset: Optional[Dataset] = None
+        self.dataset: FederatedDataset = dataset
+        self.partition: Optional[Dataset] = None
 
     async def train(self, model, device_name: str = "cpu") -> int:
         """
         Train the model on a batch. Return an integer that indicates how many local steps we have done.
         """
         self.is_training = True
+        local_steps = self.settings.learning.local_steps
 
-        if not self.dataset:
-            self.dataset = create_dataset(self.settings, participant_index=self.participant_index, train_dir=self.train_dir)
+        # Load the partition if it's not loaded yet
+        if not self.partition:
+            self.partition = self.dataset.load_partition(self.participant_index, "train")
+            if(self.settings.dataset == "cifar10"):
+                from accdfl.core.datasets.transforms import apply_transforms_cifar10 as transforms
+                self.partition = self.partition.with_transform(transforms)
+            else:
+                raise RuntimeError("Unknown dataset %s for partitioning!" % self.settings.dataset)
 
-        local_steps: int = self.settings.learning.local_steps
-        if local_steps == 0:
-            train_set = self.dataset.get_trainset(batch_size=self.settings.learning.batch_size, shuffle=True)
-            local_steps = len(train_set)
+        train_loader = DataLoader(self.partition, batch_size=self.settings.learning.batch_size, shuffle=True)
 
         device = torch.device(device_name)
         optimizer = torch.optim.SGD(
@@ -82,14 +85,10 @@ class ModelTrainer:
 
         samples_trained_on = 0
         model = model.to(device)
-        for local_step in range(local_steps):
-            train_set = self.dataset.get_trainset(batch_size=self.settings.learning.batch_size, shuffle=True)
-            train_set_it = iter(train_set)
-
-            data, target = next(train_set_it)
-
-            if self.settings.dataset == "google_speech":
-                data = torch.unsqueeze(data, 1)
+        for local_step, batch in enumerate(train_loader):
+            data, target = batch["img"], batch["label"]  # TODO hard-coded, not generic enough for different datasets
+            if local_step >= local_steps:
+                break
 
             model.train()
             data, target = Variable(data.to(device)), Variable(target.to(device))

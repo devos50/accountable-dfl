@@ -38,9 +38,6 @@ class SessionSettings:
     dataset: str
     learning: LearningSettings
     participants: List[str]
-    all_participants: List[str]
-    target_participants: int
-    dataset_base_path: str = None
     conflux_settings: Optional[ConfluxSettings] = None
     model: Optional[str] = None
     alpha: float = 1

@@ -5,9 +5,13 @@ from typing import Dict, Optional, List
 import torch
 import torch.nn as nn
 
+from accdfl.core.datasets import create_dataset
 from accdfl.core.model_trainer import ModelTrainer
 from accdfl.core.models import unserialize_model, serialize_model
 from accdfl.core.session_settings import SessionSettings
+
+
+DATASET = None
 
 
 class ModelManager:
@@ -16,22 +20,19 @@ class ModelManager:
     """
 
     def __init__(self, model: Optional[nn.Module], settings: SessionSettings, participant_index: int):
+        global DATASET
         self.model: nn.Module = model
         self.settings: SessionSettings = settings
         self.participant_index: int = participant_index
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        dataset_base_path: str = self.settings.dataset_base_path or os.environ["HOME"]
-        if self.settings.dataset in ["cifar10", "mnist", "google_speech"]:
-            self.data_dir = os.path.join(dataset_base_path, "dfl-data")
-        else:
-            # The LEAF dataset
-            self.data_dir = os.path.join(dataset_base_path, "leaf", self.settings.dataset)
-
-        self.model_trainer: ModelTrainer = ModelTrainer(self.data_dir, self.settings, self.participant_index)
-
         # Keeps track of the incoming trained models as aggregator
         self.incoming_trained_models: Dict[bytes, nn.Module] = {}
+
+        if not DATASET:
+            DATASET = create_dataset(self.settings)
+
+        self.model_trainer: ModelTrainer = ModelTrainer(DATASET, self.settings, self.participant_index)
 
     def process_incoming_trained_model(self, peer_pk: bytes, incoming_model: nn.Module):
         if peer_pk in self.incoming_trained_models:

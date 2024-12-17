@@ -96,7 +96,7 @@ class LearningCommunity(Community):
         # Initialize the model
         torch.manual_seed(settings.model_seed)
         model = create_model(settings.dataset, architecture=settings.model)
-        participant_index = settings.all_participants.index(hexlify(self.my_id).decode())
+        participant_index = settings.participants.index(hexlify(self.my_id).decode())
         self.model_manager = ModelManager(model, settings, participant_index)
 
         self.did_setup = True

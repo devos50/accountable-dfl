@@ -9,10 +9,12 @@ from base64 import b64encode
 from random import Random
 from typing import Dict, List, Optional
 
+from flwr_datasets import FederatedDataset
 import yappi
 
 import numpy as np
 
+from accdfl.core.datasets import create_dataset
 from accdfl.core.model_manager import ModelManager
 from accdfl.core.model_evaluator import ModelEvaluator
 from accdfl.core.session_settings import SessionSettings
@@ -39,6 +41,7 @@ class LearningSimulation(TaskManager):
         self.session_settings: Optional[SessionSettings] = None
         self.nodes = []
         self.data_dir = os.path.join("data", "n_%d_%s_sd%d" % (self.args.peers, self.args.dataset, self.args.seed))
+        self.dataset: Optional[FederatedDataset] = None
         self.evaluator = None
         self.logger = None
         self.model_manager: Optional[ModelManager] = None
@@ -223,14 +226,9 @@ class LearningSimulation(TaskManager):
 
         await self.start_nodes_training(active_nodes)
 
-        dataset_base_path: str = self.args.dataset_base_path or os.environ["HOME"]
-        if self.args.dataset in ["cifar10", "mnist", "google_speech"]:
-            data_dir = os.path.join(dataset_base_path, "dfl-data")
-        else:
-            # The LEAF dataset
-            data_dir = os.path.join(dataset_base_path, "leaf", self.args.dataset)
-
-        self.evaluator = ModelEvaluator(data_dir, self.session_settings)
+        if not self.dataset:
+            self.dataset = create_dataset(self.session_settings)
+        self.evaluator = ModelEvaluator(self.dataset, self.session_settings)
 
         if self.args.profile:
             yappi.start(builtins=True)

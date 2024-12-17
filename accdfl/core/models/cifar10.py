@@ -4,8 +4,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from accdfl.core.datasets.CIFAR10 import NUM_CLASSES
 from accdfl.core.models.Model import Model
+
+
+NUM_CLASSES = 10
 
 
 class CNN(Model):
