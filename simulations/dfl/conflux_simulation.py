@@ -20,9 +20,9 @@ class ConfluxSimulation(LearningSimulation):
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
         self.round_completed_counts: Dict[int, int] = {}
-        self.data_dir = os.path.join("data", "n_%d_%s_s%d_g%g_lr%g_sd%ddfl" % (
+        self.data_dir = os.path.join("data", "n_%d_%s_s%d_sf%g_lr%g_sd%ddfl" % (
             self.args.peers, self.args.dataset, self.args.sample_size,
-            self.args.gossip_interval, self.args.learning_rate, self.args.seed))
+            self.args.success_fraction, self.args.learning_rate, self.args.seed))
 
     def get_ipv8_builder(self, peer_id: int) -> ConfigBuilder:
         builder = super().get_ipv8_builder(peer_id)
@@ -46,7 +46,7 @@ class ConfluxSimulation(LearningSimulation):
             sample_size=self.args.sample_size,
             ping_timeout=5,
             chunks_in_sample=self.args.chunks_in_sample,
-            gossip_interval=self.args.gossip_interval
+            success_fraction=self.args.success_fraction
         )
 
         self.session_settings = SessionSettings(

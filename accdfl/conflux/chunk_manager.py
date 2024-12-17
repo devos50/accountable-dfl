@@ -1,4 +1,5 @@
 import copy
+from math import ceil
 from random import Random
 from typing import Dict, List
 
@@ -7,14 +8,18 @@ import torch
 
 class ChunkManager:
 
-    def __init__(self, round: int, model, num_chunks: int):
+    def __init__(self, round: int, model, num_chunks: int, success_fraction: float):
         self.round: int = round
         self.model = model
         self.num_chunks: int = num_chunks
-        self.chunks: List = [None] * num_chunks
-        self.received_chunks: List = [None] * num_chunks
-        self.chunks_received_from_previous_sample: int = 0
-        self.step: int = 0
+        self.success_fraction: float = success_fraction
+        self.chunks: List = []
+        for _ in range(num_chunks):
+            self.chunks.append([])
+
+        self.received_chunks: List = []
+        for _ in range(num_chunks):
+            self.received_chunks.append([])
 
     def prepare(self):
         # Chunk
@@ -49,21 +54,18 @@ class ChunkManager:
         return model_cpy
 
     def process_received_chunk(self, chunk_idx: int, chunk):
-        if not self.received_chunks[chunk_idx]:
-            self.received_chunks[chunk_idx] = []
         self.received_chunks[chunk_idx].append(chunk)
 
     def aggregate_received_chunks(self):
         for chunk_idx, chunks in enumerate(self.received_chunks):
             self.chunks[chunk_idx] = torch.mean(torch.stack(chunks), dim=0)
-        self.received_chunks = {}
+        self.received_chunks = [None] * self.num_chunks
+
+    def has_received_enough_chunks(self):
+        return all([(len(chunks) / self.num_chunks) >= ceil(self.success_fraction) for chunks in self.received_chunks])
 
     @staticmethod
     def get_flat_params(model):
         param_tensors = [param.data.view(-1) for param in model.parameters()]
         flat_params = torch.cat(param_tensors)
         return flat_params
-    
-    def get_random_chunk_to_send(self, rand: Random):
-        idx: int = rand.randint(0, len(self.chunks) - 1)
-        return idx, self.chunks[idx].clone()

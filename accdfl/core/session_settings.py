@@ -25,7 +25,7 @@ class ConfluxSettings:
     sample_size: int
     ping_timeout: float = 5
     chunks_in_sample: int = 10
-    gossip_interval: float = 60
+    success_fraction: float = 1
 
 
 @dataclass_json

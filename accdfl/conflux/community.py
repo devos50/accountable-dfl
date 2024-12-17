@@ -21,7 +21,7 @@ from accdfl.core.community import LearningCommunity
 from accdfl.core.models import create_model, serialize_chunk, serialize_model, unserialize_model
 from accdfl.core.session_settings import SessionSettings
 from accdfl.conflux.caches import PingPeersRequestCache, PingRequestCache
-from accdfl.conflux.payloads import PingPayload, PongPayload, TrainDonePayload
+from accdfl.conflux.payloads import PingPayload, PongPayload
 from accdfl.conflux.sample_manager import SampleManager
 from accdfl.util.transfer import TransferResult
 from simulations.bandwidth_scheduler import BWScheduler
@@ -82,7 +82,6 @@ class ConfluxCommunity(LearningCommunity):
 
         self.add_message_handler(PingPayload, self.on_ping)
         self.add_message_handler(PongPayload, self.on_pong)
-        self.add_message_handler(TrainDonePayload, self.on_train_done_payload)
 
     def setup(self, settings: SessionSettings):
         self.logger.info("Setting up experiment with %d initial participants and sample size %d (I am participant %s)" %
@@ -204,35 +203,6 @@ class ConfluxCommunity(LearningCommunity):
         cache = self.request_cache.pop("ping-%s" % peer_short_id, payload.identifier)
         cache.on_pong()
 
-    def send_train_done(self, participants: List[bytes], round_nr: Round) -> None:
-        """
-        Send a message to other nodes in the sample that training is done.
-        """
-        auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin())
-        payload = TrainDonePayload(round_nr)
-
-        for peer_pk in participants:
-            peer = self.get_peer_by_pk(peer_pk)
-            if not peer:
-                self.logger.warning("Could not find peer with public key %s", hexlify(peer_pk).decode())
-                continue
-
-            packet = self._ez_pack(self._prefix, TrainDonePayload.msg_id, [auth, payload])
-            self.endpoint.send(peer.address, packet)
-
-    @lazy_wrapper_wd(TrainDonePayload)
-    def on_train_done_payload(self, peer: Peer, payload: PongPayload, raw_data: bytes) -> None:
-        if payload.round not in self.round_info:
-            self.round_info[payload.round] = Round(payload.round)
-
-        round_info = self.round_info[payload.round]
-        round_info.compute_done_acks_received += 1
-        if round_info.compute_done_acks_received == self.settings.conflux_settings.sample_size:
-            # We are now ready to start training in the next round!
-            aggregated_model = round_info.chunk_manager_previous_sample.get_aggregated_model()
-            round_info.model = aggregated_model
-            self.train_in_round(round_info)
-
     def train_in_round(self, round_info: Round):
         self.ongoing_training_task_name = "round_%d" % round_info.round_nr
         if not self.is_pending_task_active(self.ongoing_training_task_name):
@@ -259,55 +229,42 @@ class ConfluxCommunity(LearningCommunity):
         round_info.is_training = False
         round_info.train_done = True
 
-        # It might be that we went offline at this point - check for it
-        if not self.is_active:
-            self.logger.warning("Participant %s went offline during model training in round %d - not proceeding",
-                                self.peer_manager.get_my_short_id(), round_nr)
-            return
-
-        # 3. Start sharing the model chunks
+        # 2. Start sharing the model chunks
         participants_next_sample = await self.determine_available_peers_for_sample(round_nr + 1, self.settings.conflux_settings.sample_size)
         participants_next_sample = sorted(participants_next_sample)
         await self.gossip_chunks(round_info, participants_next_sample)
 
-        # 4. Let the nodes in the next sample know that we're done training
-        self.send_train_done(participants_next_sample, round_info.round_nr + 1)
-
-        # 5. Round complete!
         self.logger.info("Participant %s completed round %d", self.peer_manager.get_my_short_id(), round_nr)
         self.last_round_completed = round_nr
         self.round_info.pop(round_nr)
 
     async def gossip_chunks(self, round_info: Round, participants: List[bytes]) -> None:
+        """
+        Gossip chunks to the next sample of participants.
+        """
         self.logger.info("Participant %s starts gossiping chunks in round %d", self.peer_manager.get_my_short_id(), round_info.round_nr)
-        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.conflux_settings.chunks_in_sample)
+        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
         round_info.chunk_manager_next_sample.prepare()
 
-        send_chunks_future = ensure_future(self.send_chunks(participants, round_info))
+        send_queue: List[Tuple[bytes, int]] = []
+        for participant in participants:
+            for chunk_idx in range(self.settings.conflux_settings.chunks_in_sample):
+                send_queue.append((participant, chunk_idx))
 
-        await asyncio.sleep(self.settings.conflux_settings.gossip_interval)
-        round_info.chunk_gossip_done = True
-        round_info.chunk_manager_next_sample = None
+        self.random.shuffle(send_queue)
 
-        await send_chunks_future
-
-    async def send_chunks(self, participants: List[bytes], round_info: Round) -> None:
-        while True:
-            # Send chunk
+        for recipient_peer_pk, chunk_idx in send_queue:
             # TODO we should probably start several transfers at the same time to better utilize outgoing bandwidth!
-            idx, chunk = round_info.chunk_manager_next_sample.get_random_chunk_to_send(self.random)
-            recipient_peer_pk = self.random.choice(participants)
+            chunk = round_info.chunk_manager_next_sample.chunks[chunk_idx]
             peer = self.get_peer_by_pk(recipient_peer_pk)
             if not peer:
                 raise RuntimeError("Could not find peer with public key %s", hexlify(recipient_peer_pk).decode())
 
-            await self.send_chunk(round_info.round_nr + 1, idx, chunk, peer)
-            if round_info.chunk_gossip_done:
-                break
+            await self.send_chunk(round_info.round_nr + 1, chunk_idx, chunk, peer)        
 
-    async def send_chunk(self, round: int, chunk_idx: int, chunk, peer, in_sample: bool = True):
+    async def send_chunk(self, round: int, chunk_idx: int, chunk, peer):
         binary_data = serialize_chunk(chunk)
-        response = {"round": round, "idx": chunk_idx, "type": "chunk", "in_sample": in_sample}
+        response = {"round": round, "idx": chunk_idx, "type": "chunk"}
         return await self.send_data(binary_data, response, peer)
 
     def cancel_current_training_task(self):
@@ -336,18 +293,8 @@ class ConfluxCommunity(LearningCommunity):
             incoming_chunk = torch.from_numpy(np.frombuffer(result.data, dtype=np.float32).copy())
             self.received_model_chunk(json_data["round"], json_data["idx"], incoming_chunk)
             return
-
-        serialized_model = result.data[:json_data["model_data_len"]]
-        self.bw_in_stats["bytes"]["model"] += len(serialized_model)
-        self.bw_in_stats["num"]["model"] += 1
-        incoming_model = unserialize_model(serialized_model, self.settings.dataset, architecture=self.settings.model)
-
-        if json_data["type"] == "trained_model":
-            await self.received_trained_model(result.peer, json_data["round"], incoming_model)
-        elif json_data["type"] == "aggregated_model":
-            self.received_aggregated_model(result.peer, json_data["round"], incoming_model)
         else:
-            raise RuntimeError("Received unknown message type %s" % json_data["type"])
+            raise RuntimeError("Unknown message type %s" % json_data["type"])
 
     def received_model_chunk(self, round_nr: int, chunk_idx: int, chunk) -> None:
         if round_nr not in self.round_info:
@@ -356,15 +303,22 @@ class ConfluxCommunity(LearningCommunity):
             self.round_info[round_nr] = new_round
 
             model = create_model(self.settings.dataset, architecture=self.settings.model)
-            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample)
+            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
             new_round.chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
         else:
             # Otherwise, process it right away!
             chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
             if not chunk_manager_previous_sample:
                 model = create_model(self.settings.dataset, architecture=self.settings.model)
-                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample)
+                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
             self.round_info[round_nr].chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
+
+        # Did we receive sufficient chunks?
+        chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
+        if chunk_manager_previous_sample.has_received_enough_chunks():
+            model = chunk_manager_previous_sample.get_aggregated_model()
+            self.round_info[round_nr].model = model
+            self.train_in_round(self.round_info[round_nr])
 
     async def send_data(self, binary_data: bytes, response: bytes, peer):
         serialized_response = json.dumps(response).encode()

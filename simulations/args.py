@@ -37,6 +37,6 @@ def get_args(dataset: str, default_lr: float, default_momentum: float = 0):
     parser.add_argument('--sample-size', type=int, default=10)
     parser.add_argument('--activity-log-interval', type=int, default=None)
     parser.add_argument('--chunks-in-sample', type=int, default=10)
-    parser.add_argument('--gossip-interval', type=float, default=60)
+    parser.add_argument('--success-fraction', type=float, default=1)
 
     return parser.parse_args()
