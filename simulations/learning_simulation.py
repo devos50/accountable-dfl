@@ -10,7 +10,6 @@ from random import Random
 from typing import Dict, List, Optional
 
 from flwr_datasets import FederatedDataset
-import yappi
 
 import numpy as np
 
@@ -231,6 +230,7 @@ class LearningSimulation(TaskManager):
         self.evaluator = ModelEvaluator(self.dataset, self.session_settings)
 
         if self.args.profile:
+            import yappi
             yappi.start(builtins=True)
 
         start_time = time.time()
@@ -290,6 +290,7 @@ class LearningSimulation(TaskManager):
 
     def on_simulation_finished(self) -> None:
         if self.args.profile:
+            import yappi
             yappi.stop()
             yappi_stats = yappi.get_func_stats()
             yappi_stats.sort("tsub")
