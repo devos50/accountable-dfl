@@ -9,3 +9,8 @@ class PingPayload:
 @dataclass(msg_id=12)
 class PongPayload:
     identifier: int
+
+
+@dataclass(msg_id=13)
+class HasEnoughChunksPayload:
+    round: int

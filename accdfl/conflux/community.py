@@ -21,7 +21,7 @@ from accdfl.core.community import LearningCommunity
 from accdfl.core.models import create_model, serialize_chunk, serialize_model, unserialize_model
 from accdfl.core.session_settings import SessionSettings
 from accdfl.conflux.caches import PingPeersRequestCache, PingRequestCache
-from accdfl.conflux.payloads import PingPayload, PongPayload
+from accdfl.conflux.payloads import HasEnoughChunksPayload, PingPayload, PongPayload
 from accdfl.conflux.sample_manager import SampleManager
 from accdfl.util.transfer import TransferResult
 from simulations.bandwidth_scheduler import BWScheduler
@@ -62,9 +62,8 @@ class ConfluxCommunity(LearningCommunity):
                 "pong": 0,
             }
         }
-        self.determine_sample_durations = []
-        self.events: List[Tuple[float, str, int, str]] = []
 
+        self.determine_sample_durations = []
         self.round_info: Dict[int, Round] = {}
         self.last_round_completed: int = 0
 
@@ -82,6 +81,7 @@ class ConfluxCommunity(LearningCommunity):
 
         self.add_message_handler(PingPayload, self.on_ping)
         self.add_message_handler(PongPayload, self.on_pong)
+        self.add_message_handler(HasEnoughChunksPayload, self.on_has_enough_chunks)
 
     def setup(self, settings: SessionSettings):
         self.logger.info("Setting up experiment with %d initial participants and sample size %d (I am participant %s)" %
@@ -203,6 +203,24 @@ class ConfluxCommunity(LearningCommunity):
         cache = self.request_cache.pop("ping-%s" % peer_short_id, payload.identifier)
         cache.on_pong()
 
+    def send_has_enough_chunks(self, peer: Peer, round: int) -> None:
+        """
+        Send a has enough chunks message to a specific peer.
+        """
+        auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin())
+        payload = HasEnoughChunksPayload(round)
+
+        packet = self._ez_pack(self._prefix, HasEnoughChunksPayload.msg_id, [auth, payload])
+        self.endpoint.send(peer.address, packet)
+
+    @lazy_wrapper_wd(HasEnoughChunksPayload)
+    def on_has_enough_chunks(self, peer: Peer, payload: HasEnoughChunksPayload, raw_data: bytes) -> None:
+        if payload.round not in self.round_info:
+            return
+
+        round_info = self.round_info[payload.round]
+        round_info.send_queue = [(peer_pk, chunk_idx) for peer_pk, chunk_idx in round_info.send_queue if peer_pk != peer.public_key.key_to_bin()]
+
     def train_in_round(self, round_info: Round):
         self.ongoing_training_task_name = "round_%d" % round_info.round_nr
         if not self.is_pending_task_active(self.ongoing_training_task_name):
@@ -246,14 +264,13 @@ class ConfluxCommunity(LearningCommunity):
         round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
         round_info.chunk_manager_next_sample.prepare()
 
-        send_queue: List[Tuple[bytes, int]] = []
         for participant in participants:
             for chunk_idx in range(self.settings.conflux_settings.chunks_in_sample):
-                send_queue.append((participant, chunk_idx))
+                round_info.send_queue.append((participant, chunk_idx))
 
-        self.random.shuffle(send_queue)
+        self.random.shuffle(round_info.send_queue)
 
-        for recipient_peer_pk, chunk_idx in send_queue:
+        for recipient_peer_pk, chunk_idx in round_info.send_queue:
             # TODO we should probably start several transfers at the same time to better utilize outgoing bandwidth!
             chunk = round_info.chunk_manager_next_sample.chunks[chunk_idx]
             peer = self.get_peer_by_pk(recipient_peer_pk)
@@ -288,6 +305,8 @@ class ConfluxCommunity(LearningCommunity):
 
         if json_data["type"] == "chunk":
             if self.last_round_completed >= json_data["round"]:
+                self.logger.warning("Participant %s ignoring chunk from round %d as it has already completed this round",
+                                    my_peer_id, json_data["round"])
                 return
 
             incoming_chunk = torch.from_numpy(np.frombuffer(result.data, dtype=np.float32).copy())
@@ -295,6 +314,12 @@ class ConfluxCommunity(LearningCommunity):
             return
         else:
             raise RuntimeError("Unknown message type %s" % json_data["type"])
+        
+    async def inform_nodes_in_previous_sample(self, round_info: Round):
+        participants_previous_sample = await self.determine_available_peers_for_sample(round_info.round_nr - 1, self.settings.conflux_settings.sample_size)
+        for participant in participants_previous_sample:
+            peer = self.get_peer_by_pk(participant)
+            self.send_has_enough_chunks(peer, round_info.round_nr - 1)
 
     def received_model_chunk(self, round_nr: int, chunk_idx: int, chunk) -> None:
         if round_nr not in self.round_info:
@@ -306,6 +331,10 @@ class ConfluxCommunity(LearningCommunity):
             new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
             new_round.chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
         else:
+            if self.round_info[round_nr].received_enough_chunks:
+                # We have already received enough chunks - ignore this chunk.
+                return
+
             # Otherwise, process it right away!
             chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
             if not chunk_manager_previous_sample:
@@ -316,6 +345,8 @@ class ConfluxCommunity(LearningCommunity):
         # Did we receive sufficient chunks?
         chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
         if chunk_manager_previous_sample.has_received_enough_chunks():
+            self.round_info[round_nr].received_enough_chunks = True
+            ensure_future(self.inform_nodes_in_previous_sample(self.round_info[round_nr]))
             model = chunk_manager_previous_sample.get_aggregated_model()
             self.round_info[round_nr].model = model
             self.train_in_round(self.round_info[round_nr])

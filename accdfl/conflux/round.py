@@ -1,5 +1,5 @@
 from asyncio import Future
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from accdfl.conflux.chunk_manager import ChunkManager
 
@@ -21,3 +21,5 @@ class Round:
         self.chunk_gossip_done: bool = False
         self.compute_done_acks_received: int = 0
         self.other_peers_ready_for_gossip: Future = Future()
+        self.send_queue: List[Tuple[bytes, int]] = []
+        self.received_enough_chunks: bool = False

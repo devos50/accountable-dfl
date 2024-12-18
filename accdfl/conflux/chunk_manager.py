@@ -59,10 +59,10 @@ class ChunkManager:
     def aggregate_received_chunks(self):
         for chunk_idx, chunks in enumerate(self.received_chunks):
             self.chunks[chunk_idx] = torch.mean(torch.stack(chunks), dim=0)
-        self.received_chunks = [None] * self.num_chunks
+        self.received_chunks = None
 
     def has_received_enough_chunks(self):
-        return all([(len(chunks) / self.num_chunks) >= ceil(self.success_fraction) for chunks in self.received_chunks])
+        return all([(len(chunks) / self.num_chunks) >= self.success_fraction for chunks in self.received_chunks])
 
     @staticmethod
     def get_flat_params(model):
