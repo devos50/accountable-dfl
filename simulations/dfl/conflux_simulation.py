@@ -58,7 +58,6 @@ class ConfluxSimulation(LearningSimulation):
             model=self.args.model,
             alpha=self.args.alpha,
             partitioner=self.args.partitioner,
-            train_device_name=self.args.train_device_name,
         )
 
         for ind, node in enumerate(self.nodes):

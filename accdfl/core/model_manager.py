@@ -65,7 +65,7 @@ class ModelManager:
         return ModelManager.aggregate(models, weights=weights)
 
     async def train(self) -> int:
-        samples_trained_on = await self.model_trainer.train(self.model, device_name=self.settings.train_device_name)
+        samples_trained_on = await self.model_trainer.train(self.model)
 
         # Detach the gradients
         self.model = unserialize_model(serialize_model(self.model), self.settings.dataset, architecture=self.settings.model)

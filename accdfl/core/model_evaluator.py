@@ -23,7 +23,10 @@ class ModelEvaluator:
         self.settings: SessionSettings = settings
         self.partition: Optional[Dataset] = None
 
-    def evaluate_accuracy(self, model, device_name: str = "cpu"):
+    def evaluate_accuracy(self, model):
+        device_name: str = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device_name)
+
         if not self.partition:
             self.partition = self.dataset.load_split("test")
             if(self.settings.dataset == "cifar10"):
@@ -33,7 +36,6 @@ class ModelEvaluator:
                 raise RuntimeError("Unknown dataset %s for partitioning!" % self.settings.dataset)
 
         test_loader = DataLoader(self.partition, batch_size=512)
-        device = torch.device(device_name)
 
         correct = example_number = total_loss = num_batches = 0
         model.to(device)

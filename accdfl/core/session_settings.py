@@ -43,4 +43,3 @@ class SessionSettings:
     alpha: float = 1
     partitioner: str = "iid"  # iid, shards or dirichlet
     model_seed: int = 0
-    train_device_name: str = "cpu"

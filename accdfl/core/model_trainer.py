@@ -34,10 +34,13 @@ class ModelTrainer:
         self.dataset: FederatedDataset = dataset
         self.partition: Optional[Dataset] = None
 
-    async def train(self, model, device_name: str = "cpu") -> int:
+    async def train(self, model) -> int:
         """
         Train the model on a batch. Return an integer that indicates how many local steps we have done.
         """
+        device_name: str = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device_name)
+
         self.is_training = True
         local_steps = self.settings.learning.local_steps
 
@@ -52,7 +55,6 @@ class ModelTrainer:
 
         train_loader = DataLoader(self.partition, batch_size=self.settings.learning.batch_size, shuffle=True)
 
-        device = torch.device(device_name)
         optimizer = torch.optim.SGD(
             model.parameters(),
             lr=self.settings.learning.learning_rate,
