@@ -28,7 +28,7 @@ def get_args(dataset: str, default_lr: float, default_momentum: float = 0):
     parser.add_argument('--duration', type=int, default=3600)  # Set to 0 to run forever
     parser.add_argument('--alpha', type=float, default=1)
     parser.add_argument('--model', type=str, default=None)
-    parser.add_argument('--partitioner', type=str, default="iid")
+    parser.add_argument('--partitioner', type=str, default="iid", choices=["iid", "dirichlet"])
     parser.add_argument('--peers', type=int, default=10)
     parser.add_argument('--profile', action=argparse.BooleanOptionalAction)
     parser.add_argument('--latencies-file', type=str, default="data/latencies.txt")
