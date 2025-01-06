@@ -105,7 +105,7 @@ class ConfluxSimulation(LearningSimulation):
 
         if self.args.accuracy_logging_interval > 0 and round_nr % self.args.accuracy_logging_interval == 0:
             print("Node %d compute accuracy for round %d!" % (ind, round_nr))
-            accuracy, loss = self.evaluator.evaluate_accuracy(model, device_name=self.args.accuracy_device_name)
+            accuracy, loss = self.evaluator.evaluate_accuracy(model)
 
             with open(os.path.join(self.data_dir, "accuracies.csv"), "a") as out_file:
                 group = "\"s=%d\"" % (self.args.sample_size)
