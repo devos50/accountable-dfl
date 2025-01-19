@@ -33,6 +33,10 @@ class ConfluxSimulation(LearningSimulation):
         await super().setup_simulation()
         participants_pks = [hexlify(node.overlays[0].my_peer.public_key.key_to_bin()).decode() for node in self.nodes]
 
+        if self.args.sample_size > len(self.nodes):
+            self.logger.warning("Sample size is larger than the number of nodes. Setting sample size to %d", len(self.nodes))
+            self.args.sample_size = len(self.nodes)
+
         # Setup the training process
         learning_settings = LearningSettings(
             learning_rate=self.args.learning_rate,
