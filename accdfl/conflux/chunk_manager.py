@@ -8,9 +8,10 @@ import torch
 
 class ChunkManager:
 
-    def __init__(self, round: int, model, num_chunks: int, success_fraction: float):
+    def __init__(self, round: int, model, num_peers: int, num_chunks: int, success_fraction: float):
         self.round: int = round
         self.model = model
+        self.num_peers: int = num_peers
         self.num_chunks: int = num_chunks
         self.success_fraction: float = success_fraction
         self.chunks: List = []
@@ -62,7 +63,7 @@ class ChunkManager:
         self.received_chunks = None
 
     def has_received_enough_chunks(self):
-        return all([(len(chunks) / self.num_chunks) >= self.success_fraction for chunks in self.received_chunks])
+        return all([(len(chunks) / self.num_peers) >= self.success_fraction for chunks in self.received_chunks])
 
     @staticmethod
     def get_flat_params(model):
