@@ -33,6 +33,10 @@ class ConfluxSimulation(LearningSimulation):
         await super().setup_simulation()
         participants_pks = [hexlify(node.overlays[0].my_peer.public_key.key_to_bin()).decode() for node in self.nodes]
 
+        if self.args.sample_size > len(self.nodes):
+            self.logger.warning("Sample size is larger than the number of nodes. Setting sample size to %d", len(self.nodes))
+            self.args.sample_size = len(self.nodes)
+
         # Setup the training process
         learning_settings = LearningSettings(
             learning_rate=self.args.learning_rate,
@@ -105,7 +109,7 @@ class ConfluxSimulation(LearningSimulation):
 
         if self.args.accuracy_logging_interval > 0 and round_nr % self.args.accuracy_logging_interval == 0:
             print("Node %d compute accuracy for round %d!" % (ind, round_nr))
-            accuracy, loss = self.evaluator.evaluate_accuracy(model, device_name=self.args.accuracy_device_name)
+            accuracy, loss = self.evaluator.evaluate_accuracy(model)
 
             with open(os.path.join(self.data_dir, "accuracies.csv"), "a") as out_file:
                 group = "\"s=%d\"" % (self.args.sample_size)

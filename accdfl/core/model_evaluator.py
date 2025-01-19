@@ -32,10 +32,14 @@ class ModelEvaluator:
             if(self.settings.dataset == "cifar10"):
                 from accdfl.core.datasets.transforms import apply_transforms_cifar10 as transforms
                 self.partition = self.partition.with_transform(transforms)
+            elif(self.settings.dataset == "google_speech"):
+                from accdfl.core.datasets.transforms import preprocess_audio_test as transforms
+                # filter removes the silent samples from testing/training as they don't really have a label
+                self.partition = self.partition.filter(lambda x : x["speaker_id"] is not None).with_transform(transforms)  
             else:
                 raise RuntimeError("Unknown dataset %s for partitioning!" % self.settings.dataset)
 
-        test_loader = DataLoader(self.partition, batch_size=512)
+        test_loader = DataLoader(self.partition, batch_size=64)
 
         correct = example_number = total_loss = num_batches = 0
         model.to(device)
@@ -47,7 +51,7 @@ class ModelEvaluator:
                 data, target = batch["img"], batch["label"]  # TODO hard-coded, not generic enough for different datasets
                 data, target = Variable(data.to(device)), Variable(target.to(device))
                 output = model.forward(data)
-                if model.__class__.__name__ == "ResNet":
+                if "ResNet" in model.__class__.__name__:
                     total_loss += ce_loss(output, target)
                 else:
                     total_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
@@ -58,5 +62,6 @@ class ModelEvaluator:
                 num_batches += 1
 
         accuracy = float(correct) / float(example_number) * 100.0
+        print(accuracy, flush = True)
         loss = total_loss / float(example_number)
         return accuracy, loss

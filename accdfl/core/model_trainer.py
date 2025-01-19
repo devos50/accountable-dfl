@@ -50,11 +50,15 @@ class ModelTrainer:
             if(self.settings.dataset == "cifar10"):
                 from accdfl.core.datasets.transforms import apply_transforms_cifar10 as transforms
                 self.partition = self.partition.with_transform(transforms)
+            elif(self.settings.dataset == "google_speech"):
+                # filter removes the silent samples from testing/training as they don't really have a label
+                from accdfl.core.datasets.transforms import preprocess_audio_train as transforms
+                self.partition = self.partition.filter(lambda x : x["speaker_id"] is not None).with_transform(transforms)
             else:
                 raise RuntimeError("Unknown dataset %s for partitioning!" % self.settings.dataset)
 
         train_loader = DataLoader(self.partition, batch_size=self.settings.learning.batch_size, shuffle=True)
-
+        
         optimizer = torch.optim.SGD(
             model.parameters(),
             lr=self.settings.learning.learning_rate,

@@ -261,7 +261,8 @@ class ConfluxCommunity(LearningCommunity):
         Gossip chunks to the next sample of participants.
         """
         self.logger.info("Participant %s starts gossiping chunks in round %d", self.peer_manager.get_my_short_id(), round_info.round_nr)
-        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
+        round_info.chunk_manager_next_sample = ChunkManager(round, self.model_manager.model, len(self.settings.participants),
+                                                            self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
         round_info.chunk_manager_next_sample.prepare()
 
         for participant in participants:
@@ -328,7 +329,8 @@ class ConfluxCommunity(LearningCommunity):
             self.round_info[round_nr] = new_round
 
             model = create_model(self.settings.dataset, architecture=self.settings.model)
-            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
+            new_round.chunk_manager_previous_sample = ChunkManager(round_nr, model, len(self.settings.participants),
+                                                                   self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
             new_round.chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
         else:
             if self.round_info[round_nr].received_enough_chunks:
@@ -339,7 +341,8 @@ class ConfluxCommunity(LearningCommunity):
             chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
             if not chunk_manager_previous_sample:
                 model = create_model(self.settings.dataset, architecture=self.settings.model)
-                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
+                self.round_info[round_nr].chunk_manager_previous_sample = ChunkManager(round_nr, model, len(self.settings.participants),
+                                                                                       self.settings.conflux_settings.chunks_in_sample, self.settings.conflux_settings.success_fraction)
             self.round_info[round_nr].chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
 
         # Did we receive sufficient chunks?
