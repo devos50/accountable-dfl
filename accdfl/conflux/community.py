@@ -254,7 +254,7 @@ class ConfluxCommunity(LearningCommunity):
 
         self.logger.info("Participant %s completed round %d", self.peer_manager.get_my_short_id(), round_nr)
         self.last_round_completed = round_nr
-        self.round_info.pop(round_nr)
+        #self.round_info.pop(round_nr)
 
     async def gossip_chunks(self, round_info: Round, participants: List[bytes]) -> None:
         """
@@ -346,11 +346,32 @@ class ConfluxCommunity(LearningCommunity):
             self.round_info[round_nr].chunk_manager_previous_sample.process_received_chunk(chunk_idx, chunk)
 
         # Did we receive sufficient chunks?
+        def compare_model_weights(model1, model2, tolerance=1e-5):
+            differences = []
+
+            # Ensure both models have the same number of parameters
+            for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+                if name1 != name2:
+                    raise ValueError(f"Parameter name mismatch: {name1} vs {name2}")
+
+                # Check if the parameters are significantly different
+                if not torch.allclose(param1, param2, atol=tolerance):
+                    max_diff = torch.max(torch.abs(param1 - param2)).item()
+                    differences.append((name1, max_diff))
+
+            return differences
+        
         chunk_manager_previous_sample = self.round_info[round_nr].chunk_manager_previous_sample
         if chunk_manager_previous_sample.has_received_enough_chunks():
             self.round_info[round_nr].received_enough_chunks = True
             ensure_future(self.inform_nodes_in_previous_sample(self.round_info[round_nr]))
             model = chunk_manager_previous_sample.get_aggregated_model()
+
+            # Check the model in the previous round and the restored one
+            differences = compare_model_weights(self.round_info[round_nr - 1].model, model)
+            print(differences)
+            print("------")
+
             self.round_info[round_nr].model = model
             self.train_in_round(self.round_info[round_nr])
 
