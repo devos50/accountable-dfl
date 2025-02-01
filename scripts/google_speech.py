@@ -1,11 +1,14 @@
-"""
-Train n standalone Google Speech models for a specified number of rounds.
-"""
 import asyncio
 import logging
 
-from scripts.run import get_args, run
+from scripts.run import run
+from simulations.args import get_args
 
 logging.basicConfig(level=logging.INFO)
-loop = asyncio.get_event_loop()
-loop.run_until_complete(run(get_args(default_lr=0.05), "google_speech"))
+
+async def main():
+    args = get_args("google_speech", default_lr=0.05)
+    await run(args)
+
+if __name__ == "__main__":
+    asyncio.run(main())

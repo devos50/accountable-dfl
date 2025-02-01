@@ -8,9 +8,10 @@ import torch
 
 class ChunkManager:
 
-    def __init__(self, round: int, model, num_chunks: int, success_fraction: float):
+    def __init__(self, round: int, model, num_peers: int, num_chunks: int, success_fraction: float):
         self.round: int = round
         self.model = model
+        self.num_peers: int = num_peers
         self.num_chunks: int = num_chunks
         self.success_fraction: float = success_fraction
         self.chunks: List = []
@@ -45,7 +46,7 @@ class ChunkManager:
         # Copy the flat tensor into the model
         pointer = 0
         model_cpy = copy.deepcopy(self.model)
-        for param in model_cpy.parameters():
+        for param in model_cpy.state_dict().values():
             numel = param.data.numel()
             param_shape = param.data.shape
             param.data.copy_(flat_params[pointer:pointer + numel].view(param_shape))
@@ -62,10 +63,10 @@ class ChunkManager:
         self.received_chunks = None
 
     def has_received_enough_chunks(self):
-        return all([(len(chunks) / self.num_chunks) >= self.success_fraction for chunks in self.received_chunks])
+        return all([(len(chunks) / self.num_peers) >= self.success_fraction for chunks in self.received_chunks])
 
     @staticmethod
     def get_flat_params(model):
-        param_tensors = [param.data.view(-1) for param in model.parameters()]
+        param_tensors = [param.data.view(-1) for param in model.state_dict().values()]
         flat_params = torch.cat(param_tensors)
         return flat_params
