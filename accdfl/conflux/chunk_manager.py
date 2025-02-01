@@ -46,7 +46,7 @@ class ChunkManager:
         # Copy the flat tensor into the model
         pointer = 0
         model_cpy = copy.deepcopy(self.model)
-        for param in model_cpy.parameters():
+        for param in model_cpy.state_dict().values():
             numel = param.data.numel()
             param_shape = param.data.shape
             param.data.copy_(flat_params[pointer:pointer + numel].view(param_shape))
@@ -67,6 +67,6 @@ class ChunkManager:
 
     @staticmethod
     def get_flat_params(model):
-        param_tensors = [param.data.view(-1) for param in model.parameters()]
+        param_tensors = [param.data.view(-1) for param in model.state_dict().values()]
         flat_params = torch.cat(param_tensors)
         return flat_params
